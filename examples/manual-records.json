@@ -1,0 +1,66 @@
+{
+  "source": "人工值班记录",
+  "description": "订单接口慢请求：包含并行下游调用、跨设备记录、缺失父调用和重复记录",
+  "records": [
+    {
+      "id": "r1",
+      "traceId": "t-100",
+      "service": "api",
+      "operation": "POST /orders",
+      "deviceId": "host-a",
+      "start": "2026-09-29T10:00:00.000Z",
+      "end": "2026-09-29T10:00:01.000Z"
+    },
+    {
+      "id": "r2",
+      "parentId": "r1",
+      "traceId": "t-100",
+      "service": "cache",
+      "operation": "GET profile",
+      "deviceId": "host-a",
+      "start": "2026-09-29T10:00:00.100Z",
+      "end": "2026-09-29T10:00:00.700Z"
+    },
+    {
+      "id": "r3",
+      "parentId": "r1",
+      "traceId": "t-100",
+      "service": "payment",
+      "operation": "authorize",
+      "deviceId": "host-b",
+      "start": "2026-09-29T10:00:00.220Z",
+      "end": "2026-09-29T10:00:00.650Z",
+      "clockQuality": "untrusted"
+    },
+    {
+      "id": "r4",
+      "parentId": "r1",
+      "traceId": "t-100",
+      "service": "audit",
+      "operation": "append",
+      "deviceId": "host-a",
+      "start": "2026-09-29T10:00:00.300Z",
+      "end": "2026-09-29T10:00:00.600Z"
+    },
+    {
+      "id": "r5",
+      "parentId": "missing-gateway",
+      "traceId": "t-101",
+      "service": "worker",
+      "operation": "retry job",
+      "deviceId": "host-c",
+      "start": "2026-09-29T10:00:02.000Z",
+      "end": "2026-09-29T10:00:02.300Z"
+    },
+    {
+      "id": "r2",
+      "parentId": "r1",
+      "traceId": "t-100",
+      "service": "cache",
+      "operation": "GET profile",
+      "deviceId": "host-a",
+      "start": "2026-09-29T10:00:00.100Z",
+      "end": "2026-09-29T10:00:00.700Z"
+    }
+  ]
+}

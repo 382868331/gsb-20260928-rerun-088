@@ -1,0 +1,32 @@
+import type { Analysis, Investigation } from './types';
+
+export async function importManual(payload: string): Promise<Analysis> {
+  const response = await fetch('/api/import/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function getAnalysis(batchId: string): Promise<Analysis> {
+  const response = await fetch(`/api/batches/${batchId}/analysis`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function listInvestigations(): Promise<Investigation[]> {
+  const response = await fetch('/api/investigations');
+  return response.ok ? response.json() : [];
+}
+
+export async function saveInvestigation(item: Investigation): Promise<Investigation> {
+  const response = await fetch('/api/investigations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) });
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function openInvestigation(id: string): Promise<{ investigation: Investigation; analysis: Analysis }> {
+  const response = await fetch(`/api/investigations/${id}`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+async function errorText(response: Response) { try { const body = await response.json(); return body.error || response.statusText; } catch { return response.statusText; } }
