@@ -6,3 +6,7 @@ __pycache__/
 .env.*
 *.pem
 *.key
+
+# perf investigation platform
+backend/data/
+frontend/dist/

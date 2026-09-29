@@ -1,0 +1,11 @@
+# 人工调用记录示例（manual-jsonl）：每行一条 JSON，# 开头为注释
+# 字段别名：id/spanId；parentId/parent_id；traceId/trace_id；name/operation；device/host
+# 时间：start/end 支持 RFC3339 或 startMs|startUs|startNs（或 start + durationMs）
+{"id":"r","traceId":"checkout-7","name":"POST /checkout","service":"api","device":"host-a","startMs":0,"endMs":10000}
+{"id":"a","parentId":"r","traceId":"checkout-7","name":"db.stock","service":"db","device":"host-b","startMs":1000,"endMs":7000}
+{"id":"b","parentId":"r","traceId":"checkout-7","name":"http.charge","service":"pay","device":"host-c","startMs":2000,"endMs":8000}
+{"id":"c","parentId":"a","traceId":"checkout-7","name":"db.conn-pool","service":"db","device":"host-b","startMs":2000,"endMs":3000}
+# 缺失父调用：parentId 在所有批次中都不存在 -> 标记 missing_parent
+{"id":"x","parentId":"ghost","traceId":"checkout-7","name":"orphan.audit","service":"audit","device":"host-d","startMs":0,"endMs":2000}
+# 重复记录：与 r 同 id，保留为证据并标记 duplicate（第一条参与建树）
+{"id":"r","traceId":"checkout-7","name":"POST /checkout","service":"api","device":"host-a","startMs":0,"endMs":11000}
