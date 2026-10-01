@@ -34,6 +34,18 @@ button.ghost span { color: #64748b; font: 11px ui-monospace, monospace; }
 .notes { display: block; margin-top: 14px; color: #334155; font-weight: 700; }
 .notes textarea { min-height: 80px; margin-top: 6px; font-family: inherit; }
 .span { display: block; width: calc(100% - 18px); margin: 6px 0; padding: 10px; text-align: left; color: #172033; background: #f8fafc; border: 1px solid #e2e8f0; }
+.span-row { display: flex; align-items: flex-start; gap: 4px; }
+.span-row .span { flex: 1; width: auto; }
+button.toggle { flex: 0 0 auto; width: 22px; height: 22px; margin-top: 8px; padding: 0; border-radius: 6px; background: #e2e8f0; color: #172033; font-weight: 700; }
+.saved-row { display: flex; align-items: center; gap: 8px; }
+.saved-row .ghost { flex: 1; }
+.compare-check { display: flex; align-items: center; gap: 4px; color: #475569; font-size: 12px; white-space: nowrap; }
+.compare { margin-top: 16px; }
+.compare table { width: 100%; border-collapse: collapse; }
+.compare th, .compare td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+.compare th { color: #475569; font-size: 12px; }
+.compare td small { display: block; color: #64748b; font: 11px ui-monospace, monospace; }
+.compare td em { font-style: normal; color: #b45309; font-weight: 700; }
 .span.active { border-color: #2563eb; background: #eff6ff; }
 .span > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .span small { color: #64748b; }

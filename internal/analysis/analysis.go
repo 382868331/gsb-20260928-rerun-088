@@ -63,10 +63,24 @@ func Analyze(batch model.Batch) model.Analysis {
 	for _, rec := range byID {
 		traceRecords[rec.TraceID] = append(traceRecords[rec.TraceID], rec)
 	}
+	for _, list := range traceRecords {
+		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].Start.Equal(list[j].Start) {
+				return list[i].ID < list[j].ID
+			}
+			return list[i].Start.Before(list[j].Start)
+		})
+	}
 
 	traces := map[string]*model.CallNode{}
 	summaries := []model.RequestSummary{}
-	for traceID, list := range traceRecords {
+	traceIDs := make([]string, 0, len(traceRecords))
+	for traceID := range traceRecords {
+		traceIDs = append(traceIDs, traceID)
+	}
+	sort.Strings(traceIDs)
+	for _, traceID := range traceIDs {
+		list := traceRecords[traceID]
 		children := map[string][]*model.CallNode{}
 		nodes := map[string]*model.CallNode{}
 		var roots []*model.CallNode
@@ -83,14 +97,20 @@ func Analyze(batch model.Batch) model.Analysis {
 			}
 			roots = append(roots, node)
 		}
-		sort.Slice(roots, func(i, j int) bool { return roots[i].Record.Start.Before(roots[j].Record.Start) })
+		sort.SliceStable(roots, func(i, j int) bool {
+			if roots[i].Record.Start.Equal(roots[j].Record.Start) {
+				return roots[i].Record.ID < roots[j].Record.ID
+			}
+			return roots[i].Record.Start.Before(roots[j].Record.Start)
+		})
 		var root *model.CallNode
 		if len(roots) == 1 {
 			root = roots[0]
 		} else if len(roots) > 1 {
-			root = roots[0]
-			for _, extra := range roots[1:] {
-				anomalies = append(anomalies, model.Anomaly{Type: "multiple_roots", RecordID: extra.Record.ID, TraceID: traceID, Summary: fmt.Sprintf("调用 %s 缺少可验证父级，作为独立根展示", extra.Record.ID)})
+			root = virtualRoot(traceID, roots)
+			children[root.Record.ID] = roots
+			for _, extra := range roots {
+				anomalies = append(anomalies, model.Anomaly{Type: "multiple_roots", RecordID: extra.Record.ID, TraceID: traceID, Summary: fmt.Sprintf("调用 %s 缺少可验证父级，作为悬挂根节点保留在虚拟根下", extra.Record.ID)})
 			}
 		} else {
 			continue
@@ -101,7 +121,15 @@ func Analyze(batch model.Batch) model.Analysis {
 		summaries = append(summaries, summarize(root, len(list)))
 	}
 
-	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Start.After(summaries[j].Start) })
+	sort.SliceStable(summaries, func(i, j int) bool {
+		if summaries[i].Start.Equal(summaries[j].Start) {
+			if summaries[i].TraceID == summaries[j].TraceID {
+				return summaries[i].RootID < summaries[j].RootID
+			}
+			return summaries[i].TraceID < summaries[j].TraceID
+		}
+		return summaries[i].Start.After(summaries[j].Start)
+	})
 	sort.Slice(anomalies, func(i, j int) bool {
 		if anomalies[i].TraceID == anomalies[j].TraceID {
 			return anomalies[i].RecordID < anomalies[j].RecordID
@@ -112,10 +140,45 @@ func Analyze(batch model.Batch) model.Analysis {
 	return model.Analysis{Batch: batch, Requests: summaries, Traces: traces, Anomalies: anomalies, GeneratedAt: time.Now().UTC()}
 }
 
+func virtualRoot(traceID string, roots []*model.CallNode) *model.CallNode {
+	start := roots[0].Record.Start
+	end := roots[0].Record.End
+	device := roots[0].Record.DeviceID
+	for _, node := range roots[1:] {
+		if node.Record.Start.Before(start) {
+			start = node.Record.Start
+		}
+		if node.Record.End.After(end) {
+			end = node.Record.End
+		}
+		if node.Record.DeviceID != device {
+			device = ""
+		}
+	}
+	return &model.CallNode{Record: model.CallRecord{
+		ID:        traceID + "__roots",
+		TraceID:   traceID,
+		Service:   "multiple-roots",
+		Operation: fmt.Sprintf("%d 个缺少可验证父级的根调用", len(roots)),
+		DeviceID:  device,
+		Start:     start,
+		End:       end,
+		Anomalies: []string{"multiple_roots"},
+	}}
+}
+
 func assignChildren(node *model.CallNode, children map[string][]*model.CallNode, level int) {
 	node.Level = level
 	kids := children[node.Record.ID]
-	sort.Slice(kids, func(i, j int) bool { return kids[i].Record.Start.Before(kids[j].Record.Start) })
+	if kids == nil {
+		kids = []*model.CallNode{}
+	}
+	sort.SliceStable(kids, func(i, j int) bool {
+		if kids[i].Record.Start.Equal(kids[j].Record.Start) {
+			return kids[i].Record.ID < kids[j].Record.ID
+		}
+		return kids[i].Record.Start.Before(kids[j].Record.Start)
+	})
 	node.Children = kids
 	for _, child := range kids {
 		assignChildren(child, children, level+1)
@@ -124,6 +187,9 @@ func assignChildren(node *model.CallNode, children map[string][]*model.CallNode,
 
 func calculateTiming(node *model.CallNode) {
 	duration := msBetween(node.Record.Start, node.Record.End)
+	if duration < 0 {
+		duration = 0
+	}
 	intervals := []interval{}
 	for _, child := range node.Children {
 		calculateTiming(child)

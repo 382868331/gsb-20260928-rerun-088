@@ -5,7 +5,7 @@ export type CallRecord = {
   attributes?: Record<string, unknown>; raw?: Record<string, unknown>; anomalies?: string[]; duplicate?: boolean;
 };
 export type Timing = { durationMs: number; waitMs: Breakdown; executionMs: Breakdown; boundsCertain: boolean; parallel: boolean; reason?: string };
-export type Node = { record: CallRecord; children: NodeType[]; timing: Timing; level: number };
+export type Node = { record: CallRecord; children: NodeType[] | null; timing: Timing; level: number };
 export type RecordType = CallRecord;
 export type NodeType = Node;
 export type Summary = { rootId: string; traceId: string; service: string; operation: string; start: string; durationMs: number; waitMs: number; executionMs: number; spanCount: number; anomalyCount: number; certain: boolean };
