@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -33,6 +34,8 @@ type api struct {
 	store *store.Store
 }
 
+var errMissingCompareIDs = errors.New("需要提供 a 和 b 两个调查 ID 进行对照")
+
 func (a *api) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/batches", a.listBatches)
@@ -40,6 +43,7 @@ func (a *api) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batches/{id}/analysis", a.batchAnalysis)
 	mux.HandleFunc("GET /api/investigations", a.listInvestigations)
 	mux.HandleFunc("POST /api/investigations", a.saveInvestigation)
+	mux.HandleFunc("GET /api/investigations/compare", a.compareInvestigations)
 	mux.HandleFunc("GET /api/investigations/{id}", a.getInvestigation)
 	mux.Handle("/", http.FileServer(http.Dir("./web")))
 	return mux
@@ -126,6 +130,42 @@ func (a *api) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.Analyze(batch)})
+}
+
+func (a *api) compareInvestigations(w http.ResponseWriter, r *http.Request) {
+	idA, idB := r.URL.Query().Get("a"), r.URL.Query().Get("b")
+	if idA == "" || idB == "" {
+		writeError(w, http.StatusBadRequest, errMissingCompareIDs)
+		return
+	}
+	invA, analysisA, err := a.loadInvestigation(idA)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	invB, analysisB, err := a.loadInvestigation(idB)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	comparison, err := analysis.Compare(analysisA, analysisB, invA, invB)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	writeJSONResponse(w, comparison)
+}
+
+func (a *api) loadInvestigation(id string) (model.Investigation, model.Analysis, error) {
+	inv, err := a.store.GetInvestigation(id)
+	if err != nil {
+		return model.Investigation{}, model.Analysis{}, err
+	}
+	batch, err := a.store.GetBatch(inv.BatchID)
+	if err != nil {
+		return model.Investigation{}, model.Analysis{}, err
+	}
+	return inv, analysis.Analyze(batch), nil
 }
 
 func jsonDecode(r *http.Request, target any) error {

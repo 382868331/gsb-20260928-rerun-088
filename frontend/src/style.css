@@ -34,6 +34,10 @@ button.ghost span { color: #64748b; font: 11px ui-monospace, monospace; }
 .notes { display: block; margin-top: 14px; color: #334155; font-weight: 700; }
 .notes textarea { min-height: 80px; margin-top: 6px; font-family: inherit; }
 .span { display: block; width: calc(100% - 18px); margin: 6px 0; padding: 10px; text-align: left; color: #172033; background: #f8fafc; border: 1px solid #e2e8f0; }
+.span-row { display: flex; align-items: stretch; gap: 4px; }
+.span-row .span { flex: 1; width: auto; }
+.toggle { width: 26px; min-width: 26px; margin: 6px 0; padding: 0; background: #e2e8f0; color: #334155; border-radius: 8px; font-weight: 700; }
+.toggle-placeholder { width: 26px; min-width: 26px; }
 .span.active { border-color: #2563eb; background: #eff6ff; }
 .span > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .span small { color: #64748b; }
@@ -48,4 +52,10 @@ dl { display: grid; grid-template-columns: 70px 1fr; gap: 4px 10px; }
 dt { color: #64748b; }
 dd { margin: 0; }
 pre { max-height: 320px; overflow: auto; background: #0f172a; color: #dbeafe; padding: 12px; border-radius: 10px; font-size: 12px; }
+.compare { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+.compare label { display: block; margin: 8px 0; font-weight: 700; color: #334155; }
+.compare select { width: 100%; margin-top: 4px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.compare-result { margin-top: 12px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }
+.compare-result h4 { margin: 0 0 6px; }
+.compare-result .note { display: block; margin-top: 4px; }
 @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }

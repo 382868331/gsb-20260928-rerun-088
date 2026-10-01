@@ -106,3 +106,27 @@ type Anomaly struct {
 	TraceID  string `json:"traceId,omitempty"`
 	Summary  string `json:"summary"`
 }
+
+type ComparisonSide struct {
+	InvestigationID string            `json:"investigationId"`
+	Name            string            `json:"name"`
+	RootID          string            `json:"rootId"`
+	TraceID         string            `json:"traceId"`
+	DurationMS      float64           `json:"durationMs"`
+	ExecutionMS     DurationBreakdown `json:"executionMs"`
+	WaitMS          DurationBreakdown `json:"waitMs"`
+	Certain         bool              `json:"certain"`
+	Parallel        bool              `json:"parallel"`
+	AnomalyCount    int               `json:"anomalyCount"`
+}
+
+type Comparison struct {
+	A                  ComparisonSide    `json:"a"`
+	B                  ComparisonSide    `json:"b"`
+	DurationDeltaMS    float64           `json:"durationDeltaMs"`
+	ExecutionDelta     DurationBreakdown `json:"executionDelta"`
+	WaitDelta          DurationBreakdown `json:"waitDelta"`
+	Attribution        string            `json:"attribution"`
+	EvidenceIncomplete bool              `json:"evidenceIncomplete"`
+	Notes              []string          `json:"notes"`
+}

@@ -1,4 +1,4 @@
-import type { Analysis, Investigation } from './types';
+import type { Analysis, Comparison, Investigation } from './types';
 
 export async function importManual(payload: string): Promise<Analysis> {
   const response = await fetch('/api/import/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
@@ -25,6 +25,12 @@ export async function saveInvestigation(item: Investigation): Promise<Investigat
 
 export async function openInvestigation(id: string): Promise<{ investigation: Investigation; analysis: Analysis }> {
   const response = await fetch(`/api/investigations/${id}`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function compareInvestigations(a: string, b: string): Promise<Comparison> {
+  const response = await fetch(`/api/investigations/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
   if (!response.ok) throw new Error(await errorText(response));
   return response.json();
 }

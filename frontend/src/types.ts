@@ -12,3 +12,5 @@ export type Summary = { rootId: string; traceId: string; service: string; operat
 export type Anomaly = { type: string; recordId?: string; traceId?: string; summary: string };
 export type Analysis = { batch: { id: string; source: string; format: string; importedAt: string; description?: string; records: RecordType[] }; requests: Summary[]; traces: Record<string, NodeType>; anomalies: Anomaly[]; generatedAt: string };
 export type Investigation = { id?: string; batchId: string; name: string; rootId: string; traceId: string; selectedId?: string; notes?: string; view?: { showAnomaliesOnly?: boolean; expandedIds?: string[]; timeMode?: string } };
+export type ComparisonSide = { investigationId: string; name: string; rootId: string; traceId: string; durationMs: number; executionMs: Breakdown; waitMs: Breakdown; certain: boolean; parallel: boolean; anomalyCount: number };
+export type Comparison = { a: ComparisonSide; b: ComparisonSide; durationDeltaMs: number; executionDelta: Breakdown; waitDelta: Breakdown; attribution: string; evidenceIncomplete: boolean; notes: string[] };

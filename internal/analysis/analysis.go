@@ -115,6 +115,9 @@ func Analyze(batch model.Batch) model.Analysis {
 func assignChildren(node *model.CallNode, children map[string][]*model.CallNode, level int) {
 	node.Level = level
 	kids := children[node.Record.ID]
+	if kids == nil {
+		kids = []*model.CallNode{}
+	}
 	sort.Slice(kids, func(i, j int) bool { return kids[i].Record.Start.Before(kids[j].Record.Start) })
 	node.Children = kids
 	for _, child := range kids {
