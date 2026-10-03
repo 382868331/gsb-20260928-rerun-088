@@ -37,6 +37,44 @@ type DurationBreakdown struct {
 	Reason  string  `json:"reason,omitempty"`
 }
 
+// ClockConstraint 是研究者在原始时间戳之外补充的时钟依据。
+// Type=before：after 事件比 before 事件晚 MinMS..MaxMS 毫秒（发送早于接收）。
+// Type=offset：target 事件相对 anchor 事件的时间差落在 MinMS..MaxMS。
+// 依据只引用原始记录的开始/结束时刻，不修改原始时间戳。
+type ClockConstraint struct {
+	ID        string  `json:"id"`
+	Type      string  `json:"type"`
+	Before    string  `json:"before,omitempty"`
+	After     string  `json:"after,omitempty"`
+	Anchor    string  `json:"anchor,omitempty"`
+	Target    string  `json:"target,omitempty"`
+	MinMS     float64 `json:"minMs"`
+	MaxMS     float64 `json:"maxMs"`
+	Rationale string  `json:"rationale,omitempty"`
+}
+
+const (
+	ConstraintBefore = "before"
+	ConstraintOffset = "offset"
+)
+
+// ClockConflict 描述相互矛盾、无法同时成立的时钟依据，
+// 并指出涉及的原始记录与约束，系统不挑选某个精确时刻掩盖冲突。
+type ClockConflict struct {
+	Type          string   `json:"type"`
+	ConstraintIDs []string `json:"constraintIds"`
+	RecordIDs     []string `json:"recordIds"`
+	Summary       string   `json:"summary"`
+}
+
+// ClockReport 汇总一次时钟假设下的求解结果。
+type ClockReport struct {
+	Feasible           bool            `json:"feasible"`
+	Conflicts          []ClockConflict `json:"conflicts,omitempty"`
+	ConstraintIDs      []string        `json:"constraintIds,omitempty"`
+	UncertainRecordIDs []string        `json:"uncertainRecordIds,omitempty"`
+}
+
 type Evidence struct {
 	Type    string         `json:"type"`
 	Summary string         `json:"summary"`
@@ -54,12 +92,20 @@ type Investigation struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	View      ViewState `json:"view"`
+	Hypothesis ClockHypothesis `json:"hypothesis,omitempty"`
 }
 
 type ViewState struct {
 	ShowAnomaliesOnly bool     `json:"showAnomaliesOnly,omitempty"`
 	ExpandedIDs       []string `json:"expandedIds,omitempty"`
 	TimeMode          string   `json:"timeMode,omitempty"`
+}
+
+// ClockHypothesis 是一次调查采用的时钟假设：约束集合与尚未解决的部分。
+type ClockHypothesis struct {
+	Name        string            `json:"name,omitempty"`
+	Constraints []ClockConstraint `json:"constraints,omitempty"`
+	Unresolved  []string          `json:"unresolved,omitempty"`
 }
 
 type RequestSummary struct {
@@ -81,6 +127,7 @@ type Analysis struct {
 	Requests    []RequestSummary     `json:"requests"`
 	Traces      map[string]*CallNode `json:"traces"`
 	Anomalies   []Anomaly            `json:"anomalies"`
+	Clock       ClockReport          `json:"clock"`
 	GeneratedAt time.Time            `json:"generatedAt"`
 }
 
@@ -95,6 +142,8 @@ type TimingSplit struct {
 	DurationMS    float64           `json:"durationMs"`
 	WaitMS        DurationBreakdown `json:"waitMs"`
 	ExecutionMS   DurationBreakdown `json:"executionMs"`
+	StartOffsetMS DurationBreakdown `json:"startOffsetMs,omitempty"`
+	EndOffsetMS   DurationBreakdown `json:"endOffsetMs,omitempty"`
 	BoundsCertain bool              `json:"boundsCertain"`
 	Parallel      bool              `json:"parallel"`
 	Reason        string            `json:"reason,omitempty"`
