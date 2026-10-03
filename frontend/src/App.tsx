@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { compareInvestigations, importManual, listInvestigations, openInvestigation, saveInvestigation } from './api';
+import { compareInvestigations, importManual, listInvestigations, openInvestigation, runClockAnalysis, saveInvestigation } from './api';
 import { sample } from './sample';
-import type { Analysis, Anomaly, Comparison, Investigation, NodeType } from './types';
+import type { Analysis, Anomaly, ClockConstraint, ClockReport, Comparison, Investigation, NodeType } from './types';
 import './style.css';
 
 const anomalyLabel: Record<string, string> = {
   duplicate_record: '重复记录', missing_parent: '缺失父调用', negative_duration: '时间倒置', multiple_roots: '多个根节点'
+};
+
+const conflictLabel: Record<string, string> = {
+  contradiction: '约束相互矛盾', invalid_constraint: '约束无效', unknown_record: '引用未知记录', invalid_range: '时差范围不成立'
 };
 
 const attributionLabel: Record<string, string> = {
@@ -14,6 +18,11 @@ const attributionLabel: Record<string, string> = {
   uncertain: '证据不完整，无法确定增量来源，保留区间',
   unchanged: '两次调查总耗时一致'
 };
+
+let constraintSeq = 1;
+function newConstraint(): ClockConstraint {
+  return { id: `c-${constraintSeq++}`, type: 'offset', anchor: '', target: '', minMs: 0, maxMs: 0, rationale: '' };
+}
 
 export default function App() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -28,6 +37,8 @@ export default function App() {
   const [compareB, setCompareB] = useState('');
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [message, setMessage] = useState('');
+  const [hypothesisName, setHypothesisName] = useState('');
+  const [constraints, setConstraints] = useState<ClockConstraint[]>([]);
 
   useEffect(() => { listInvestigations().then(setSaved).catch(() => undefined); }, []);
   const traces = analysis?.traces ?? {};
@@ -59,7 +70,7 @@ export default function App() {
 
   async function doSave() {
     if (!analysis || !trace) return;
-    const item: Investigation = { batchId: analysis.batch.id, name, rootId: trace.record.id, traceId: trace.record.traceId, selectedId: selected?.record.id, notes, view: { timeMode: 'bounds', expandedIds: [...expandedIds] } };
+    const item: Investigation = { batchId: analysis.batch.id, name, rootId: trace.record.id, traceId: trace.record.traceId, selectedId: selected?.record.id, notes, hypothesis: { name: hypothesisName, constraints }, view: { timeMode: 'bounds', expandedIds: [...expandedIds] } };
     const result = await saveInvestigation(item);
     setSaved(await listInvestigations());
     setMessage(`调查 ${result.id} 已保存`);
@@ -71,8 +82,28 @@ export default function App() {
       adoptAnalysis(reopened.analysis, reopened.investigation.traceId, reopened.investigation.selectedId || reopened.investigation.rootId, reopened.investigation.view?.expandedIds);
       setName(reopened.investigation.name);
       setNotes(reopened.investigation.notes || '');
+      setHypothesisName(reopened.investigation.hypothesis?.name || '');
+      setConstraints(reopened.investigation.hypothesis?.constraints ?? []);
       setMessage('已重新打开调查，耗时由原始记录重新计算');
     } catch (error) { setMessage((error as Error).message); }
+  }
+
+  async function doClockAnalysis() {
+    if (!analysis) { setMessage('请先导入批次'); return; }
+    try {
+      const result = await runClockAnalysis(analysis.batch.id, { name: hypothesisName, constraints });
+      adoptAnalysis(result, traceId, selectedId, [...expandedIds]);
+      const report = result.clock;
+      if (report && !report.feasible) {
+        setMessage(`约束分析：发现 ${report.conflicts?.length ?? 0} 组矛盾，假设不可行，已回退到仅设备时钟的区间`);
+      } else {
+        setMessage('约束分析完成：区间已按启用约束收紧（原始时间戳未改动）');
+      }
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  function updateConstraint(id: string, patch: Partial<ClockConstraint>) {
+    setConstraints(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
   }
 
   async function doCompare() {
@@ -122,6 +153,17 @@ export default function App() {
           {request.anomalyCount > 0 && <em>{request.anomalyCount} 个异常</em>}
         </button>)}
         {analysis && <div className="anomalies"><h3>异常与不确定关系</h3>{anomalies.length === 0 && <p className="muted">无异常</p>}{anomalies.map((item, index) => <AnomalyRow key={index} item={item} />)}</div>}
+        {analysis && <HypothesisPanel
+          analysis={analysis}
+          hypothesisName={hypothesisName}
+          onNameChange={setHypothesisName}
+          constraints={constraints}
+          onChange={updateConstraint}
+          onAdd={() => setConstraints(items => [...items, newConstraint()])}
+          onRemove={id => setConstraints(items => items.filter(item => item.id !== id))}
+          onRun={doClockAnalysis}
+        />}
+        {analysis?.clock && <ClockReportView report={analysis.clock} />}
         <label className="notes">调查备注<textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="记录结论、负责人或后续验证" /></label>
         <button className="primary" disabled={!analysis || !trace} onClick={doSave}>保存调查视图</button>
         {message && <p className="message">{message}</p>}
@@ -141,6 +183,71 @@ function BatchBadge({ analysis }: { analysis: Analysis }) {
   return <div className="badge"><b>{analysis.batch.source}</b><span>{analysis.batch.format}</span><span>{(analysis.batch.records ?? []).length} 条原始记录</span></div>;
 }
 
+function HypothesisPanel({ analysis, hypothesisName, onNameChange, constraints, onChange, onAdd, onRemove, onRun }: {
+  analysis: Analysis;
+  hypothesisName: string;
+  onNameChange: (value: string) => void;
+  constraints: ClockConstraint[];
+  onChange: (id: string, patch: Partial<ClockConstraint>) => void;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onRun: () => void;
+}) {
+  const recordIds = (analysis.batch.records ?? []).map(record => record.id);
+  return <div className="hypothesis">
+    <h3>时钟假设与约束分析</h3>
+    <p className="muted">依据只引用原始记录的开始/结束时刻，可写作 recordId、recordId:start 或 recordId:end；原始时间戳不会被修改。</p>
+    <label>假设名称<input value={hypothesisName} onChange={e => onNameChange(e.target.value)} placeholder="例如：网关对时假设" /></label>
+    <datalist id="record-ids">{recordIds.map(id => <option key={id} value={id} />)}</datalist>
+    {constraints.length === 0 && <p className="muted">尚无约束。添加跨设备时差或先后顺序依据后运行约束分析。</p>}
+    {constraints.map(item => <div key={item.id} className={`constraint ${item.disabled ? 'disabled' : ''}`}>
+      <div className="constraint-row">
+        <select aria-label="约束类型" value={item.type} onChange={e => onChange(item.id, { type: e.target.value })}>
+          <option value="offset">时差范围</option>
+          <option value="before">先后关系</option>
+        </select>
+        {item.type === 'offset' ? <>
+          <input aria-label="基准记录" list="record-ids" placeholder="基准记录" value={item.anchor ?? ''} onChange={e => onChange(item.id, { anchor: e.target.value })} />
+          <input aria-label="目标记录" list="record-ids" placeholder="目标记录" value={item.target ?? ''} onChange={e => onChange(item.id, { target: e.target.value })} />
+        </> : <>
+          <input aria-label="在先记录" list="record-ids" placeholder="在先记录" value={item.before ?? ''} onChange={e => onChange(item.id, { before: e.target.value })} />
+          <input aria-label="在后记录" list="record-ids" placeholder="在后记录" value={item.after ?? ''} onChange={e => onChange(item.id, { after: e.target.value })} />
+        </>}
+        <input aria-label="下限毫秒" type="number" value={item.minMs} onChange={e => onChange(item.id, { minMs: Number(e.target.value) })} />
+        <span className="muted">至</span>
+        <input aria-label="上限毫秒" type="number" value={item.maxMs} onChange={e => onChange(item.id, { maxMs: Number(e.target.value) })} />
+        <span className="muted">ms</span>
+      </div>
+      <div className="constraint-row">
+        <input aria-label="依据说明" className="rationale" placeholder="依据说明（日志、对时方式）" value={item.rationale ?? ''} onChange={e => onChange(item.id, { rationale: e.target.value })} />
+        <label className="toggle-enabled"><input type="checkbox" checked={!item.disabled} onChange={e => onChange(item.id, { disabled: !e.target.checked })} />启用</label>
+        <button className="ghost" onClick={() => onRemove(item.id)}>删除</button>
+      </div>
+    </div>)}
+    <div className="constraint-actions">
+      <button className="ghost" onClick={onAdd}>添加约束</button>
+      <button className="primary" onClick={onRun}>运行约束分析</button>
+    </div>
+  </div>;
+}
+
+function ClockReportView({ report }: { report: ClockReport }) {
+  return <div className="clock-report">
+    <h3>约束分析结果</h3>
+    <p className={report.feasible ? 'feasible' : 'uncertain'}>
+      {report.feasible ? '当前假设可行：所有启用约束可同时成立。' : '假设不可行：存在无法同时成立的约束，已回退到仅设备时钟的区间。'}
+    </p>
+    {(report.conflicts ?? []).map((conflict, index) => <div key={index} className="conflict">
+      <b>{conflictLabel[conflict.type] || conflict.type}</b>
+      <p>{conflict.summary}</p>
+      {(conflict.constraintIds ?? []).length > 0 && <p>涉及约束：{conflict.constraintIds.join('、')}</p>}
+      {(conflict.recordIds ?? []).length > 0 && <p>涉及记录：{conflict.recordIds.join('、')}</p>}
+    </div>)}
+    {(report.disabledConstraintIds ?? []).length > 0 && <p className="muted">已停用约束：{report.disabledConstraintIds!.join('、')}（未参与求解，可随时恢复）</p>}
+    {(report.uncertainRecordIds ?? []).length > 0 && <p className="uncertain">仍无法确定相对顺序的记录：{report.uncertainRecordIds!.join('、')}（保留区间，不强行排名）</p>}
+  </div>;
+}
+
 function Timeline({ node, selectedId, onSelect, expanded, onToggle }: { node: NodeType; selectedId: string; onSelect: (id: string) => void; expanded: Set<string>; onToggle: (id: string) => void }) {
   const children = kids(node);
   const duration = node.timing?.durationMs || 0;
@@ -155,6 +262,7 @@ function Timeline({ node, selectedId, onSelect, expanded, onToggle }: { node: No
         <div><b>{node.record.service}</b><span>{node.record.operation}</span><small>{node.record.deviceId}</small>{(node.record.anomalies ?? []).map(item => <em key={item}>{anomalyLabel[item] || item}</em>)}</div>
         <div className="bar"><i style={{ width: `${waitPct}%` }} /><span>{fmt(node.timing?.executionMs?.nominal)} 执行 / {fmt(node.timing?.waitMs?.nominal)} 等待 ms</span></div>
         {!node.timing?.boundsCertain && <small className="uncertain">跨设备时钟：{fmt(node.timing?.executionMs?.lower)}–{fmt(node.timing?.executionMs?.upper)} ms 执行（区间不确定）</small>}
+        {node.timing?.assumptionBased && <small className="assumption">区间已按时钟假设收紧（非原始证据直接证明）</small>}
         {node.timing?.parallel && <small className="parallel">并行区间已合并</small>}
       </button>
     </div>
@@ -187,6 +295,7 @@ function CompareResult({ comparison }: { comparison: Comparison }) {
       <dt>等待（含并行）增量</dt><dd><DeltaValue value={comparison.waitDelta} /></dd>
     </dl>
     <p className={comparison.evidenceIncomplete ? 'uncertain' : ''}>{attributionLabel[comparison.attribution] || comparison.attribution}</p>
+    {comparison.assumptionChange && <small className="assumption">两次调查时钟假设不同：区间差异可能仅来自假设收紧，而非真实耗时变化</small>}
     {comparison.evidenceIncomplete && <small className="uncertain">证据不完整：存在异常记录或跨设备时钟不确定</small>}
     {(comparison.notes ?? []).map((note, index) => <small key={index} className="muted note">{note}</small>)}
   </div>;
@@ -202,4 +311,3 @@ function kids(node: NodeType): NodeType[] { return node.children ?? []; }
 function flatten(node: NodeType): NodeType[] { return [node, ...kids(node).flatMap(flatten)]; }
 function findNode(node: NodeType, id: string): NodeType | null { if (node.record.id === id) return node; for (const child of kids(node)) { const found = findNode(child, id); if (found) return found; } return null; }
 function fmt(value: number | undefined) { return Number.isFinite(value) ? Math.round((value || 0) * 100) / 100 : '—'; }
-

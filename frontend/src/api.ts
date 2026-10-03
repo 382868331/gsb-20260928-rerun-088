@@ -1,4 +1,4 @@
-import type { Analysis, Comparison, Investigation } from './types';
+import type { Analysis, ClockHypothesis, Comparison, Investigation } from './types';
 
 export async function importManual(payload: string): Promise<Analysis> {
   const response = await fetch('/api/import/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
@@ -8,6 +8,12 @@ export async function importManual(payload: string): Promise<Analysis> {
 
 export async function getAnalysis(batchId: string): Promise<Analysis> {
   const response = await fetch(`/api/batches/${batchId}/analysis`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function runClockAnalysis(batchId: string, hypothesis: ClockHypothesis): Promise<Analysis> {
+  const response = await fetch(`/api/batches/${batchId}/clock-analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(hypothesis) });
   if (!response.ok) throw new Error(await errorText(response));
   return response.json();
 }

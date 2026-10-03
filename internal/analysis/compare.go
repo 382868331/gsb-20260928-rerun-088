@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"math"
+	"sort"
 
 	"performance-investigation/internal/model"
 )
@@ -41,7 +42,28 @@ func Compare(analysisA, analysisB model.Analysis, invA, invB model.Investigation
 	if sideB.AnomalyCount > 0 {
 		comparison.Notes = append(comparison.Notes, fmt.Sprintf("调查 %s 含 %d 条异常记录（重复/缺父/时间倒置），证据不完整", sideB.Name, sideB.AnomalyCount))
 	}
+	if invA.BatchID == invB.BatchID && hypothesisKey(invA.Hypothesis) != hypothesisKey(invB.Hypothesis) {
+		comparison.AssumptionChange = true
+		comparison.Notes = append(comparison.Notes, "两次调查基于同一批次但时钟假设不同：区间差异可能仅来自假设收紧，而非真实耗时变化")
+		if comparison.DurationDeltaMS == 0 {
+			comparison.Notes = append(comparison.Notes, "总耗时未变，观察到的区间变化由假设收紧造成")
+		}
+	}
 	return comparison, nil
+}
+
+// hypothesisKey 汇总假设中启用约束的内容，用于判断两次调查假设是否一致；
+// 停用的约束不参与求解，视为相同假设。
+func hypothesisKey(hypothesis model.ClockHypothesis) string {
+	parts := []string{}
+	for _, constraint := range hypothesis.Constraints {
+		if constraint.Disabled {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s|%s|%s|%s|%s|%v|%v", constraint.Type, constraint.Before, constraint.After, constraint.Anchor, constraint.Target, constraint.MinMS, constraint.MaxMS))
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("%q", parts)
 }
 
 func side(result model.Analysis, inv model.Investigation) (model.ComparisonSide, error) {

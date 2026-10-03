@@ -26,6 +26,7 @@ const baseAnalysis = {
 function mockFetch(analysis: unknown, investigations: unknown[] = []) {
   globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
     const target = String(url);
+    if (target.includes('/clock-analysis')) return new Response(JSON.stringify(analysis), { status: 200 });
     if (target.startsWith('/api/import')) return new Response(JSON.stringify(analysis), { status: 200 });
     if (target.includes('/api/investigations/compare')) return new Response(JSON.stringify({
       a: { name: '第一次' }, b: { name: '第二次' }, durationDeltaMs: 0,
@@ -86,4 +87,53 @@ test('保存调查后重算并支持对照', async () => {
   fireEvent.change(screen.getByLabelText('对照'), { target: { value: 'inv-2' } });
   fireEvent.click(screen.getByText('对照所选调查'));
   await waitFor(() => screen.getByText('两次调查总耗时一致'));
+});
+
+test('约束分析：矛盾假设展示冲突约束与涉及记录', async () => {
+  const conflictAnalysis = {
+    ...baseAnalysis,
+    clock: {
+      feasible: false,
+      conflicts: [{ type: 'contradiction', constraintIds: ['c-1', 'c-2'], recordIds: ['root', 'child'], summary: '时钟约束相互矛盾：不存在能同时满足全部依据的时刻' }],
+      uncertainRecordIds: ['child']
+    }
+  };
+  mockFetch(conflictAnalysis);
+  render(<App />);
+  fireEvent.click(screen.getByText('导入并分析'));
+  await waitFor(() => screen.getByText(/已导入批次/));
+  fireEvent.click(screen.getByText('添加约束'));
+  fireEvent.change(screen.getByLabelText('基准记录'), { target: { value: 'root' } });
+  fireEvent.change(screen.getByLabelText('目标记录'), { target: { value: 'child' } });
+  fireEvent.click(screen.getByText('运行约束分析'));
+  await waitFor(() => screen.getByText(/假设不可行/));
+  screen.getByText('约束相互矛盾');
+  screen.getByText(/涉及约束：c-1、c-2/);
+  screen.getByText(/涉及记录：root、child/);
+  screen.getByText(/仍无法确定相对顺序的记录：child/);
+});
+
+test('约束可暂时停用并随调查保存', async () => {
+  let savedBody: string | null = null;
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const target = String(url);
+    if (target.includes('/clock-analysis')) return new Response(JSON.stringify({ ...baseAnalysis, clock: { feasible: true, disabledConstraintIds: ['c-x'] } }), { status: 200 });
+    if (target.startsWith('/api/import')) return new Response(JSON.stringify(baseAnalysis), { status: 200 });
+    if (target.startsWith('/api/investigations')) {
+      if (init?.method === 'POST') { savedBody = String(init.body); return new Response(JSON.stringify({ id: 'inv-new' }), { status: 200 }); }
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    return new Response('{}', { status: 200 });
+  }) as unknown as typeof fetch;
+  render(<App />);
+  fireEvent.click(screen.getByText('导入并分析'));
+  await waitFor(() => screen.getByText(/已导入批次/));
+  fireEvent.click(screen.getByText('添加约束'));
+  fireEvent.click(screen.getByLabelText('启用'));
+  fireEvent.click(screen.getByText('运行约束分析'));
+  await waitFor(() => screen.getByText(/已停用约束：c-x/));
+  fireEvent.click(screen.getByText('保存调查视图'));
+  await waitFor(() => screen.getByText(/调查 inv-new 已保存/));
+  const saved = JSON.parse(savedBody || '{}');
+  if (!saved.hypothesis?.constraints?.[0]?.disabled) throw new Error('停用的约束必须随调查保存');
 });

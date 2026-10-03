@@ -14,7 +14,14 @@ type interval struct {
 	device     string
 }
 
+// Analyze 不带任何时钟假设的分析，等价于空假设的 AnalyzeWithClock。
 func Analyze(batch model.Batch) model.Analysis {
+	result := analyzeRaw(batch)
+	result.Clock = model.ClockReport{Feasible: true}
+	return result
+}
+
+func analyzeRaw(batch model.Batch) model.Analysis {
 	records := cloneRecords(batch.Records)
 	byID := map[string]model.CallRecord{}
 	duplicates := map[string]bool{}

@@ -20,11 +20,13 @@ type edge struct {
 }
 
 type clockSolver struct {
-	refs     []string
-	index    map[string]int
-	edges    []edge
-	dist     [][]float64
-	feasible bool
+	refs                []string
+	index               map[string]int
+	edges               []edge
+	dist                [][]float64
+	feasible            bool
+	usedConstraints     []string
+	disabledConstraints []string
 }
 
 // solveClock 在不修改原始时间戳的前提下，把同设备时钟读数与研究者补充的
@@ -35,7 +37,9 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 	conflicts := []model.ClockConflict{}
 	valid := map[string]bool{}
 	for _, rec := range records {
-		if rec.Duplicate {
+		// 重复标记按记录 ID 命中所有相同记录；求解保留首次出现的代表，
+		// 与调用树使用的节点一致，其余副本不参与。
+		if valid[rec.ID] {
 			continue
 		}
 		valid[rec.ID] = true
@@ -45,10 +49,16 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 
 	// 同一设备上的时钟读数次序与差值按名义时间戳精确固定；时间倒置记录不加入。
 	byDevice := map[string][]model.CallRecord{}
+	firstSeen := map[string]bool{}
 	for _, rec := range records {
-		if rec.Duplicate || rec.End.Before(rec.Start) {
+		if !valid[rec.ID] || rec.End.Before(rec.Start) {
 			continue
 		}
+		// 同一 ID 只取第一条代表记录。
+		if _, seen := firstSeen[rec.ID]; seen {
+			continue
+		}
+		firstSeen[rec.ID] = true
 		byDevice[rec.DeviceID] = append(byDevice[rec.DeviceID], rec)
 	}
 	deviceIDs := make([]string, 0, len(byDevice))
@@ -72,7 +82,7 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 		for i := 1; i < len(evList); i++ {
 			delta := ms(evList[i].t.Sub(evList[i-1].t))
 			src := "device:" + deviceID
-		recs := []string{recOfRef[evList[i-1].ref], recOfRef[evList[i].ref]}
+			recs := []string{recOfRef[evList[i-1].ref], recOfRef[evList[i].ref]}
 			solver.addEdge(evList[i-1].ref, evList[i].ref, delta, src, recs)
 			solver.addEdge(evList[i].ref, evList[i-1].ref, -delta, src, recs)
 		}
@@ -80,6 +90,10 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 
 	usedConstraints := []string{}
 	for _, constraint := range constraints {
+		if constraint.Disabled {
+			solver.disabledConstraints = append(solver.disabledConstraints, constraint.ID)
+			continue
+		}
 		from, to, ok := constraintEndpoints(constraint)
 		if !ok {
 			conflicts = append(conflicts, model.ClockConflict{Type: "invalid_constraint", ConstraintIDs: []string{constraint.ID}, Summary: fmt.Sprintf("约束 %s 类型或端点缺失，未参与求解", constraint.ID)})
@@ -104,7 +118,7 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 		recordIDs := []string{}
 		for _, edgeIndex := range cycle {
 			e := solver.edges[edgeIndex]
-			if e.source != "" && e.source[:7] != "device:" {
+			if e.source != "" && !isDeviceSource(e.source) {
 				conflictIDs = append(conflictIDs, e.source)
 			}
 			recordIDs = append(recordIDs, e.records...)
@@ -112,21 +126,23 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 		conflicts = append(conflicts, model.ClockConflict{Type: "contradiction", ConstraintIDs: uniqStrings(conflictIDs), RecordIDs: uniqStrings(recordIDs), Summary: "时钟约束相互矛盾：不存在能同时满足全部依据的时刻，已列出涉及的原始记录与约束"})
 		solver.feasible = false
 		// 退回仅依据同设备时钟读数的求解，保留区间，不采用任何矛盾假设。
-		fallback := &clockSolver{index: map[string]int{}, feasible: true}
+		fallback := &clockSolver{index: map[string]int{}, feasible: false}
 		for _, ref := range solver.refs {
 			fallback.addEvent(ref)
 		}
 		for _, e := range solver.edges {
-			if len(e.source) >= 7 && e.source[:7] == "device:" {
+			if isDeviceSource(e.source) {
 				fallback.edges = append(fallback.edges, e)
 			}
 		}
 		fallback.floyd()
+		fallback.usedConstraints = usedConstraints
+		fallback.disabledConstraints = solver.disabledConstraints
 		return fallback, conflicts
 	}
 
 	solver.floyd()
-	_ = usedConstraints
+	solver.usedConstraints = usedConstraints
 	return solver, conflicts
 }
 
@@ -136,15 +152,31 @@ func constraintEndpoints(constraint model.ClockConstraint) (from, to string, ok 
 		if constraint.Before == "" || constraint.After == "" {
 			return "", "", false
 		}
-		return constraint.Before, constraint.After, true
+		// 发送早于接收：before 记录的结束不晚于 after 记录的开始。
+		return normalizeEventRef(constraint.Before, "end"), normalizeEventRef(constraint.After, "start"), true
 	case model.ConstraintOffset:
 		if constraint.Anchor == "" || constraint.Target == "" {
 			return "", "", false
 		}
-		return constraint.Anchor, constraint.Target, true
+		return normalizeEventRef(constraint.Anchor, "start"), normalizeEventRef(constraint.Target, "start"), true
 	default:
 		return "", "", false
 	}
+}
+
+// normalizeEventRef 允许约束端点写作 "recId"、"recId:start" 或 "recId:end"；
+// 裸记录 ID 按约束语义取默认事件。
+func normalizeEventRef(id, fallback string) string {
+	for i := len(id) - 1; i >= 0; i-- {
+		if id[i] == ':' {
+			suffix := id[i+1:]
+			if suffix == "start" || suffix == "end" {
+				return id
+			}
+			return id[:i] + ":" + fallback
+		}
+	}
+	return id + ":" + fallback
 }
 
 func recordOfRef(ref string) string {
@@ -154,6 +186,10 @@ func recordOfRef(ref string) string {
 		}
 	}
 	return ref
+}
+
+func isDeviceSource(source string) bool {
+	return len(source) >= 7 && source[:7] == "device:"
 }
 
 func (s *clockSolver) addEvent(ref string) int {

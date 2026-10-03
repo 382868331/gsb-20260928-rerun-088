@@ -46,6 +46,22 @@ button.ghost span { color: #64748b; font: 11px ui-monospace, monospace; }
 .bar span { position: relative; display: block; padding: 3px 8px; font-size: 12px; }
 .uncertain { color: #b45309 !important; font-weight: 700; }
 .parallel { color: #6d28d9 !important; font-weight: 700 }
+.assumption { color: #6d28d9 !important; display: block; font-weight: 700; }
+.feasible { color: #047857; font-weight: 700; }
+.hypothesis { border-top: 1px solid #e2e8f0; margin-top: 12px; padding-top: 8px; display: grid; gap: 6px; }
+.hypothesis label { display: grid; gap: 4px; font-size: 13px; }
+.hypothesis input, .hypothesis select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px; }
+.constraint { border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; display: grid; gap: 6px; }
+.constraint.disabled { opacity: 0.55; }
+.constraint-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.constraint-row input[type="number"] { width: 80px; }
+.constraint-row .rationale { flex: 1; min-width: 160px; }
+.constraint-row button.ghost { width: auto; margin-top: 0; padding: 6px 10px; }
+.toggle-enabled { display: flex; flex-direction: row; gap: 4px; align-items: center; font-size: 13px; }
+.constraint-actions { display: flex; gap: 8px; }
+.constraint-actions button { width: auto; margin-top: 0; padding: 8px 12px; }
+.clock-report { border-top: 1px solid #e2e8f0; margin-top: 12px; padding-top: 8px; }
+.clock-report .conflict { border-left: 3px solid #b45309; padding: 4px 8px; margin: 6px 0; background: #fffbeb; border-radius: 4px; }
 .evidence { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 12px; }
 .evidence p { background: #fffbeb; border-radius: 8px; padding: 8px; color: #92400e; }
 dl { display: grid; grid-template-columns: 70px 1fr; gap: 4px 10px; }

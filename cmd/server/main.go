@@ -41,6 +41,7 @@ func (a *api) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batches", a.listBatches)
 	mux.HandleFunc("POST /api/import/manual", a.importManual)
 	mux.HandleFunc("GET /api/batches/{id}/analysis", a.batchAnalysis)
+	mux.HandleFunc("POST /api/batches/{id}/clock-analysis", a.clockAnalysis)
 	mux.HandleFunc("GET /api/investigations", a.listInvestigations)
 	mux.HandleFunc("POST /api/investigations", a.saveInvestigation)
 	mux.HandleFunc("GET /api/investigations/compare", a.compareInvestigations)
@@ -74,6 +75,22 @@ func (a *api) importManual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResponse(w, analysis.Analyze(batch))
+}
+
+// clockAnalysis 用请求体中的时钟假设对批次原始记录做约束分析：
+// 返回可行解释、矛盾约束链及被假设收紧的区间，原始记录保持不变。
+func (a *api) clockAnalysis(w http.ResponseWriter, r *http.Request) {
+	batch, err := a.store.GetBatch(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	var hypothesis model.ClockHypothesis
+	if err := jsonDecode(r, &hypothesis); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSONResponse(w, analysis.AnalyzeWithClock(batch, hypothesis))
 }
 
 func (a *api) batchAnalysis(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +146,7 @@ func (a *api) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.Analyze(batch)})
+	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.AnalyzeWithClock(batch, inv.Hypothesis)})
 }
 
 func (a *api) compareInvestigations(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +182,7 @@ func (a *api) loadInvestigation(id string) (model.Investigation, model.Analysis,
 	if err != nil {
 		return model.Investigation{}, model.Analysis{}, err
 	}
-	return inv, analysis.Analyze(batch), nil
+	return inv, analysis.AnalyzeWithClock(batch, inv.Hypothesis), nil
 }
 
 func jsonDecode(r *http.Request, target any) error {

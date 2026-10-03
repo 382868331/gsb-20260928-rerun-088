@@ -51,6 +51,8 @@ type ClockConstraint struct {
 	MinMS     float64 `json:"minMs"`
 	MaxMS     float64 `json:"maxMs"`
 	Rationale string  `json:"rationale,omitempty"`
+	// Disabled 为 true 时约束暂时停用、不参与求解，但保留在假设中可随时恢复。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 const (
@@ -72,6 +74,7 @@ type ClockReport struct {
 	Feasible           bool            `json:"feasible"`
 	Conflicts          []ClockConflict `json:"conflicts,omitempty"`
 	ConstraintIDs      []string        `json:"constraintIds,omitempty"`
+	DisabledIDs        []string        `json:"disabledConstraintIds,omitempty"`
 	UncertainRecordIDs []string        `json:"uncertainRecordIds,omitempty"`
 }
 
@@ -82,16 +85,16 @@ type Evidence struct {
 }
 
 type Investigation struct {
-	ID        string    `json:"id"`
-	BatchID   string    `json:"batchId"`
-	Name      string    `json:"name"`
-	RootID    string    `json:"rootId"`
-	TraceID   string    `json:"traceId"`
-	Selected  string    `json:"selectedId,omitempty"`
-	Notes     string    `json:"notes,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	View      ViewState `json:"view"`
+	ID         string          `json:"id"`
+	BatchID    string          `json:"batchId"`
+	Name       string          `json:"name"`
+	RootID     string          `json:"rootId"`
+	TraceID    string          `json:"traceId"`
+	Selected   string          `json:"selectedId,omitempty"`
+	Notes      string          `json:"notes,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	UpdatedAt  time.Time       `json:"updatedAt"`
+	View       ViewState       `json:"view"`
 	Hypothesis ClockHypothesis `json:"hypothesis,omitempty"`
 }
 
@@ -145,8 +148,11 @@ type TimingSplit struct {
 	StartOffsetMS DurationBreakdown `json:"startOffsetMs,omitempty"`
 	EndOffsetMS   DurationBreakdown `json:"endOffsetMs,omitempty"`
 	BoundsCertain bool              `json:"boundsCertain"`
-	Parallel      bool              `json:"parallel"`
-	Reason        string            `json:"reason,omitempty"`
+	// AssumptionBased 为 true 表示区间上界/下界由研究者的时钟假设收紧，
+	// 而非原始时间戳可直接证明；原始记录本身从未被修改。
+	AssumptionBased bool   `json:"assumptionBased,omitempty"`
+	Parallel        bool   `json:"parallel"`
+	Reason          string `json:"reason,omitempty"`
 }
 
 type Anomaly struct {
@@ -177,5 +183,8 @@ type Comparison struct {
 	WaitDelta          DurationBreakdown `json:"waitDelta"`
 	Attribution        string            `json:"attribution"`
 	EvidenceIncomplete bool              `json:"evidenceIncomplete"`
-	Notes              []string          `json:"notes"`
+	// AssumptionChange 为 true 表示两次调查基于同一批次但时钟假设不同，
+	// 此时区间差异可能仅来自假设收紧，而非真实耗时变化。
+	AssumptionChange bool     `json:"assumptionChange"`
+	Notes            []string `json:"notes"`
 }
