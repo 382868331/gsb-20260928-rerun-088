@@ -41,6 +41,7 @@ func (a *api) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batches", a.listBatches)
 	mux.HandleFunc("POST /api/import/manual", a.importManual)
 	mux.HandleFunc("GET /api/batches/{id}/analysis", a.batchAnalysis)
+	mux.HandleFunc("POST /api/batches/{id}/clock", a.clockAnalysis)
 	mux.HandleFunc("GET /api/investigations", a.listInvestigations)
 	mux.HandleFunc("POST /api/investigations", a.saveInvestigation)
 	mux.HandleFunc("GET /api/investigations/compare", a.compareInvestigations)
@@ -83,6 +84,22 @@ func (a *api) batchAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResponse(w, analysis.Analyze(batch))
+}
+
+// clockAnalysis 用研究者提交的时钟假设重新求解批次，
+// 返回带时钟报告的完整分析；不修改批次中的原始时间戳。
+func (a *api) clockAnalysis(w http.ResponseWriter, r *http.Request) {
+	batch, err := a.store.GetBatch(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	var hypothesis model.ClockHypothesis
+	if err := jsonDecode(r, &hypothesis); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSONResponse(w, analysis.AnalyzeWithHypothesis(batch, hypothesis))
 }
 
 func (a *api) listInvestigations(w http.ResponseWriter, _ *http.Request) {
@@ -129,7 +146,7 @@ func (a *api) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.Analyze(batch)})
+	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.AnalyzeWithHypothesis(batch, inv.Hypothesis)})
 }
 
 func (a *api) compareInvestigations(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +182,7 @@ func (a *api) loadInvestigation(id string) (model.Investigation, model.Analysis,
 	if err != nil {
 		return model.Investigation{}, model.Analysis{}, err
 	}
-	return inv, analysis.Analyze(batch), nil
+	return inv, analysis.AnalyzeWithHypothesis(batch, inv.Hypothesis), nil
 }
 
 func jsonDecode(r *http.Request, target any) error {

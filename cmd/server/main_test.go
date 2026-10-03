@@ -150,3 +150,106 @@ func TestCompareEndpointAndReopenConsistency(t *testing.T) {
 		t.Fatal("reopened investigation analysis must match recomputed batch analysis")
 	}
 }
+func TestClockEndpointAndHypothesisReopen(t *testing.T) {
+	dir := t.TempDir()
+	server := &api{store: newStoreForTest(dir)}
+	payload := []byte(`{"source":"test","records":[
+		{"id":"root","traceId":"trace","service":"api","operation":"GET","deviceId":"a","start":"2026-09-29T10:00:00Z","end":"2026-09-29T10:00:01Z"},
+		{"id":"remote","parentId":"root","traceId":"trace","service":"db","operation":"q","deviceId":"b","start":"2026-09-29T10:00:00.2Z","end":"2026-09-29T10:00:00.8Z"}
+	]}`)
+	importResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(importResponse, httptest.NewRequest(http.MethodPost, "/api/import/manual", bytes.NewReader(payload)))
+	if importResponse.Code != http.StatusOK {
+		t.Fatalf("import status = %d", importResponse.Code)
+	}
+	var imported struct {
+		Batch struct {
+			ID string `json:"id"`
+		} `json:"batch"`
+	}
+	if err := json.Unmarshal(importResponse.Body.Bytes(), &imported); err != nil {
+		t.Fatal(err)
+	}
+
+	// 直接提交矛盾假设：报告不可行并点名约束与记录，原始时间戳不被修改。
+	conflicting := []byte(`{"name":"矛盾假设","constraints":[
+		{"id":"c1","type":"offset","anchor":"root:start","target":"remote:start","minMs":100,"maxMs":200},
+		{"id":"c2","type":"offset","anchor":"root:start","target":"remote:start","minMs":500,"maxMs":600}
+	]}`)
+	clockResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(clockResponse, httptest.NewRequest(http.MethodPost, "/api/batches/"+imported.Batch.ID+"/clock", bytes.NewReader(conflicting)))
+	if clockResponse.Code != http.StatusOK {
+		t.Fatalf("clock status = %d: %s", clockResponse.Code, clockResponse.Body.String())
+	}
+	var solved struct {
+		Clock struct {
+			Feasible  bool `json:"feasible"`
+			Conflicts []struct {
+				Type          string   `json:"type"`
+				ConstraintIDs []string `json:"constraintIds"`
+				RecordIDs     []string `json:"recordIds"`
+			} `json:"conflicts"`
+		} `json:"clock"`
+		Batch struct {
+			Records []struct {
+				ID    string `json:"id"`
+				Start string `json:"start"`
+			} `json:"records"`
+		} `json:"batch"`
+	}
+	if err := json.Unmarshal(clockResponse.Body.Bytes(), &solved); err != nil {
+		t.Fatal(err)
+	}
+	if solved.Clock.Feasible {
+		t.Fatal("contradictory hypothesis must be infeasible")
+	}
+	if len(solved.Clock.Conflicts) == 0 || solved.Clock.Conflicts[0].Type != "contradiction" {
+		t.Fatalf("expected contradiction, got %+v", solved.Clock.Conflicts)
+	}
+	for _, record := range solved.Batch.Records {
+		if record.ID == "remote" && record.Start != "2026-09-29T10:00:00.2Z" {
+			t.Fatalf("raw timestamp must not be rewritten, got %s", record.Start)
+		}
+	}
+
+	// 保存带假设的调查并重开：假设随分析一起生效。
+	saved := []byte(`{"batchId":"` + imported.Batch.ID + `","name":"带假设","rootId":"root","traceId":"trace","hypothesis":{"name":"对时","constraints":[{"id":"c1","type":"offset","anchor":"root:start","target":"remote:start","minMs":180,"maxMs":220}]}}`)
+	saveResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(saveResponse, httptest.NewRequest(http.MethodPost, "/api/investigations", bytes.NewReader(saved)))
+	if saveResponse.Code != http.StatusOK {
+		t.Fatalf("save status = %d: %s", saveResponse.Code, saveResponse.Body.String())
+	}
+	var inv struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(saveResponse.Body.Bytes(), &inv); err != nil {
+		t.Fatal(err)
+	}
+	reopenResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reopenResponse, httptest.NewRequest(http.MethodGet, "/api/investigations/"+inv.ID, nil))
+	var reopened struct {
+		Investigation struct {
+			Hypothesis struct {
+				Name        string `json:"name"`
+				Constraints []struct {
+					ID string `json:"id"`
+				} `json:"constraints"`
+			} `json:"hypothesis"`
+		} `json:"investigation"`
+		Analysis struct {
+			Clock struct {
+				Feasible      bool     `json:"feasible"`
+				ConstraintIDs []string `json:"constraintIds"`
+			} `json:"clock"`
+		} `json:"analysis"`
+	}
+	if err := json.Unmarshal(reopenResponse.Body.Bytes(), &reopened); err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Investigation.Hypothesis.Name != "对时" || len(reopened.Investigation.Hypothesis.Constraints) != 1 {
+		t.Fatalf("hypothesis must persist, got %+v", reopened.Investigation.Hypothesis)
+	}
+	if !reopened.Analysis.Clock.Feasible || len(reopened.Analysis.Clock.ConstraintIDs) != 1 {
+		t.Fatalf("reopened analysis must apply hypothesis, got %+v", reopened.Analysis.Clock)
+	}
+}

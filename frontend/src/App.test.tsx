@@ -87,3 +87,51 @@ test('保存调查后重算并支持对照', async () => {
   fireEvent.click(screen.getByText('对照所选调查'));
   await waitFor(() => screen.getByText('两次调查总耗时一致'));
 });
+test('时钟假设：矛盾约束点名来源，停用证据后区间变化', async () => {
+  const withClock = (clock: unknown) => ({ ...baseAnalysis, clock });
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const target = String(url);
+    if (target.includes('/clock')) {
+      const body = JSON.parse(String(init?.body || '{}'));
+      const disabled = (body.constraints ?? []).filter((c: { disabled?: boolean }) => c.disabled).map((c: { id: string }) => c.id);
+      const recordsDisabled: string[] = body.disabledRecords ?? [];
+      const feasible = !disabled.includes('c-1') ? false : true;
+      return new Response(JSON.stringify(withClock({
+        feasible,
+        conflicts: feasible ? [] : [{ type: 'contradiction', constraintIds: ['c-1'], recordIds: ['root', 'child'], summary: '时钟约束相互矛盾' }],
+        inactiveConstraintIds: disabled,
+        disabledRecordIds: recordsDisabled,
+        uncertainRecordIds: recordsDisabled,
+        offsets: [
+          { recordId: 'root', deviceId: 'host-a', startLower: 0, startUpper: 0, endLower: 1000, endUpper: 1000, certain: true },
+          { recordId: 'child', deviceId: 'host-b', startLower: feasible ? 100 : 0, startUpper: feasible ? 200 : 0, endLower: 600, endUpper: 700, certain: feasible }
+        ]
+      })), { status: 200 });
+    }
+    if (target.startsWith('/api/import')) return new Response(JSON.stringify(baseAnalysis), { status: 200 });
+    if (target.startsWith('/api/investigations')) return new Response(JSON.stringify([]), { status: 200 });
+    return new Response('{}', { status: 200 });
+  }) as unknown as typeof fetch;
+
+  render(<App />);
+  fireEvent.click(screen.getByText('导入并分析'));
+  await waitFor(() => screen.getByText(/已导入批次/));
+
+  fireEvent.click(screen.getByText('新增时钟依据'));
+  fireEvent.click(screen.getByText('应用假设求解'));
+  await waitFor(() => screen.getByText('约束相互矛盾'));
+  screen.getByText(/约束：c-1/);
+  screen.getByText(/记录：root, child/);
+
+  fireEvent.click(screen.getByLabelText('暂时停用'));
+  fireEvent.click(screen.getByText('应用假设求解'));
+  await waitFor(() => screen.getByText('当前假设可成立：所有约束可同时满足。'));
+  screen.getByText(/已停用约束：c-1/);
+
+  const toggles = await screen.findAllByText('停用证据');
+  fireEvent.click(toggles[0]);
+  fireEvent.click(screen.getByText('应用假设求解'));
+  await waitFor(() => screen.getByText(/已停用约束：c-1/));
+  screen.getByText('恢复证据');
+});
+

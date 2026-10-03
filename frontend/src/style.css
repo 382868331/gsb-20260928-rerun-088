@@ -59,3 +59,23 @@ pre { max-height: 320px; overflow: auto; background: #0f172a; color: #dbeafe; pa
 .compare-result h4 { margin: 0 0 6px; }
 .compare-result .note { display: block; margin-top: 4px; }
 @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }
+.clock-section .field { display: block; margin: 8px 0; font-weight: 700; color: #334155; }
+.clock-section .field input { width: 100%; margin-top: 4px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.constraint { margin: 10px 0; padding: 10px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.constraint.disabled { opacity: .55; }
+.constraint-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.constraint-head label { display: flex; align-items: center; gap: 4px; color: #64748b; font-size: 12px; }
+.constraint-head select { padding: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.constraint-head .danger { margin-left: auto; background: #fee2e2; color: #991b1b; padding: 6px 10px; width: auto; }
+.constraint-refs { display: flex; gap: 8px; margin-top: 6px; }
+.constraint-refs input { flex: 1; min-width: 0; padding: 7px; border: 1px solid #cbd5e1; border-radius: 8px; font: 12px ui-monospace, monospace; }
+.constraint-actions { display: flex; gap: 10px; margin: 12px 0; }
+.constraint-actions .ghost { width: auto; margin-top: 0; }
+.clock-report .anomaly small { display: block; margin-top: 4px; color: #7f1d1d; }
+.feasible { color: #15803d; font-weight: 700; }
+table.offsets { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.offsets th, table.offsets td { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+table.offsets th { color: #64748b; }
+table.offsets tr.disabled td { color: #94a3b8; text-decoration: line-through; }
+table.offsets .ghost { width: auto; margin-top: 0; padding: 4px 8px; font-size: 12px; }
+

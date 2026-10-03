@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { compareInvestigations, importManual, listInvestigations, openInvestigation, saveInvestigation } from './api';
+import { analyzeClock, compareInvestigations, importManual, listInvestigations, openInvestigation, saveInvestigation } from './api';
 import { sample } from './sample';
-import type { Analysis, Anomaly, Comparison, Investigation, NodeType } from './types';
+import type { Analysis, Anomaly, ClockConstraint, Comparison, Investigation, NodeType, OffsetBound } from './types';
 import './style.css';
 
 const anomalyLabel: Record<string, string> = {
@@ -13,6 +13,16 @@ const attributionLabel: Record<string, string> = {
   wait: '总耗时增加主要来自下游/并行等待',
   uncertain: '证据不完整，无法确定增量来源，保留区间',
   unchanged: '两次调查总耗时一致'
+};
+
+attributionLabel.hypothesis = '差异来自时钟假设收紧，而非真实耗时变化';
+
+const conflictLabel: Record<string, string> = {
+  contradiction: '约束相互矛盾',
+  invalid_constraint: '约束无效',
+  unknown_record: '引用未知记录',
+  invalid_range: '时差范围不成立',
+  excluded_record: '引用已停用记录'
 };
 
 export default function App() {
@@ -28,6 +38,9 @@ export default function App() {
   const [compareB, setCompareB] = useState('');
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [message, setMessage] = useState('');
+  const [hypothesisName, setHypothesisName] = useState('');
+  const [constraints, setConstraints] = useState<ClockConstraint[]>([]);
+  const [disabledRecords, setDisabledRecords] = useState<string[]>([]);
 
   useEffect(() => { listInvestigations().then(setSaved).catch(() => undefined); }, []);
   const traces = analysis?.traces ?? {};
@@ -59,7 +72,7 @@ export default function App() {
 
   async function doSave() {
     if (!analysis || !trace) return;
-    const item: Investigation = { batchId: analysis.batch.id, name, rootId: trace.record.id, traceId: trace.record.traceId, selectedId: selected?.record.id, notes, view: { timeMode: 'bounds', expandedIds: [...expandedIds] } };
+    const item: Investigation = { batchId: analysis.batch.id, name, rootId: trace.record.id, traceId: trace.record.traceId, selectedId: selected?.record.id, notes, view: { timeMode: 'bounds', expandedIds: [...expandedIds] }, hypothesis: { name: hypothesisName, constraints, disabledRecords } };
     const result = await saveInvestigation(item);
     setSaved(await listInvestigations());
     setMessage(`调查 ${result.id} 已保存`);
@@ -71,6 +84,10 @@ export default function App() {
       adoptAnalysis(reopened.analysis, reopened.investigation.traceId, reopened.investigation.selectedId || reopened.investigation.rootId, reopened.investigation.view?.expandedIds);
       setName(reopened.investigation.name);
       setNotes(reopened.investigation.notes || '');
+      const hypothesis = reopened.investigation.hypothesis;
+      setHypothesisName(hypothesis?.name || '');
+      setConstraints(hypothesis?.constraints ?? []);
+      setDisabledRecords(hypothesis?.disabledRecords ?? []);
       setMessage('已重新打开调查，耗时由原始记录重新计算');
     } catch (error) { setMessage((error as Error).message); }
   }
@@ -81,6 +98,28 @@ export default function App() {
       setComparison(await compareInvestigations(compareA, compareB));
       setMessage('');
     } catch (error) { setComparison(null); setMessage((error as Error).message); }
+  }
+
+  async function applyHypothesis() {
+    if (!analysis) return;
+    try {
+      const result = await analyzeClock(analysis.batch.id, { name: hypothesisName, constraints, disabledRecords });
+      adoptAnalysis(result, traceId, selectedId, [...expandedIds]);
+      setMessage('已按时钟假设重新求解，原始时间戳未被修改');
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  function updateConstraint(id: string, patch: Partial<ClockConstraint>) {
+    setConstraints(prev => prev.map(item => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function addConstraint() {
+    const id = `c-${constraints.length + 1}`;
+    setConstraints(prev => [...prev, { id, type: 'offset', anchor: '', target: '', minMs: 0, maxMs: 0, rationale: '' }]);
+  }
+
+  function toggleRecordDisabled(recordId: string) {
+    setDisabledRecords(prev => prev.includes(recordId) ? prev.filter(item => item !== recordId) : [...prev, recordId]);
   }
 
   function toggle(id: string) {
@@ -132,6 +171,18 @@ export default function App() {
         {trace && <Timeline node={trace} selectedId={selected?.record.id || ''} onSelect={setSelectedId} expanded={expandedIds} onToggle={toggle} />}
         {selected && <Evidence node={selected} />}
         {analysis && <DuplicateEvidence analysis={analysis} />}
+        {analysis && <ClockSection
+          analysis={analysis}
+          hypothesisName={hypothesisName}
+          setHypothesisName={setHypothesisName}
+          constraints={constraints}
+          addConstraint={addConstraint}
+          updateConstraint={updateConstraint}
+          removeConstraint={(id: string) => setConstraints(prev => prev.filter(item => item.id !== id))}
+          disabledRecords={disabledRecords}
+          toggleRecordDisabled={toggleRecordDisabled}
+          applyHypothesis={applyHypothesis}
+        />}
       </section>
     </section>
   </main>;
@@ -182,6 +233,8 @@ function CompareResult({ comparison }: { comparison: Comparison }) {
   return <div className="compare-result">
     <h4>对照结果</h4>
     <p><b>{comparison.a.name}</b> → <b>{comparison.b.name}</b>：总耗时 {delta >= 0 ? '+' : ''}{fmt(delta)} ms</p>
+    {(comparison.hypothesisA || comparison.hypothesisB) && <p className="muted">假设：{comparison.hypothesisA || '（无）'} → {comparison.hypothesisB || '（无）'}</p>}
+    {comparison.assumptionTightened && <p className="uncertain">同一批次的不同假设：耗时区间变化来自假设收紧，不是真实耗时变化</p>}
     <dl>
       <dt>本段处理增量</dt><dd><DeltaValue value={comparison.executionDelta} /></dd>
       <dt>等待（含并行）增量</dt><dd><DeltaValue value={comparison.waitDelta} /></dd>
@@ -192,6 +245,86 @@ function CompareResult({ comparison }: { comparison: Comparison }) {
   </div>;
 }
 
+type ClockSectionProps = {
+  analysis: Analysis;
+  hypothesisName: string;
+  setHypothesisName: (value: string) => void;
+  constraints: ClockConstraint[];
+  addConstraint: () => void;
+  updateConstraint: (id: string, patch: Partial<ClockConstraint>) => void;
+  removeConstraint: (id: string) => void;
+  disabledRecords: string[];
+  toggleRecordDisabled: (id: string) => void;
+  applyHypothesis: () => void;
+};
+function ClockSection(props: ClockSectionProps) {
+  const clock = props.analysis.clock;
+  const records = (props.analysis.batch.records ?? []).filter(record => !record.duplicate);
+  return <div className="evidence clock-section">
+    <h3>时钟假设与约束分析</h3>
+    <label className="field">假设名称
+      <input value={props.hypothesisName} onChange={event => props.setHypothesisName(event.target.value)} placeholder="例如：host-b 时钟快 200ms" />
+    </label>
+    {props.constraints.length === 0 && <p className="muted">尚未添加时钟依据。用 记录ID:start / 记录ID:end 引用原始事件。</p>}
+    {props.constraints.map(item => <div key={item.id} className={item.disabled ? 'constraint disabled' : 'constraint'}>
+      <div className="constraint-head">
+        <b>{item.id}</b>
+        <select value={item.type} onChange={event => props.updateConstraint(item.id, { type: event.target.value })}>
+          <option value="offset">时差范围</option>
+          <option value="before">先后关系</option>
+        </select>
+        <label><input type="checkbox" checked={!!item.disabled} onChange={event => props.updateConstraint(item.id, { disabled: event.target.checked })} /> 暂时停用</label>
+        <button className="ghost danger" onClick={() => props.removeConstraint(item.id)}>删除</button>
+      </div>
+      {item.type === 'offset'
+        ? <div className="constraint-refs">
+            <input value={item.anchor || ''} placeholder="基准事件 anchor:start" onChange={event => props.updateConstraint(item.id, { anchor: event.target.value })} />
+            <input value={item.target || ''} placeholder="目标事件 target:start" onChange={event => props.updateConstraint(item.id, { target: event.target.value })} />
+          </div>
+        : <div className="constraint-refs">
+            <input value={item.before || ''} placeholder="先发生事件 a:end" onChange={event => props.updateConstraint(item.id, { before: event.target.value })} />
+            <input value={item.after || ''} placeholder="后发生事件 b:start" onChange={event => props.updateConstraint(item.id, { after: event.target.value })} />
+          </div>}
+      <div className="constraint-refs">
+        <input type="number" value={item.minMs} onChange={event => props.updateConstraint(item.id, { minMs: Number(event.target.value) })} placeholder="最小 ms" />
+        <input type="number" value={item.maxMs} onChange={event => props.updateConstraint(item.id, { maxMs: Number(event.target.value) })} placeholder="最大 ms" />
+        <input value={item.rationale || ''} placeholder="依据来源（日志、对时记录）" onChange={event => props.updateConstraint(item.id, { rationale: event.target.value })} />
+      </div>
+    </div>)}
+    <div className="constraint-actions">
+      <button className="ghost" onClick={props.addConstraint}>新增时钟依据</button>
+      <button onClick={props.applyHypothesis}>应用假设求解</button>
+    </div>
+    {clock && <div className="clock-report">
+      <p className={clock.feasible ? 'feasible' : 'uncertain'}>{clock.feasible ? '当前假设可成立：所有约束可同时满足。' : '存在无法同时成立的约束，系统未挑选任何精确时刻掩盖冲突。'}</p>
+      {(clock.conflicts ?? []).map((conflict, index) => <p key={index} className="anomaly">
+        <b>{conflictLabel[conflict.type] || conflict.type}</b>
+        <span>{conflict.summary}</span>
+        <small>约束：{(conflict.constraintIds ?? []).join(', ') || '—'} · 记录：{(conflict.recordIds ?? []).join(', ') || '—'}</small>
+      </p>)}
+      {(clock.inactiveConstraintIds ?? []).length > 0 && <p className="muted">已停用约束：{(clock.inactiveConstraintIds ?? []).join(', ')}（未参与求解，可随时恢复）</p>}
+      {(clock.uncertainRecordIds ?? []).length > 0 && <p className="uncertain">仍无法确定区间的记录：{(clock.uncertainRecordIds ?? []).join(', ')}</p>}
+      <h4>各记录相对根节点的起止区间（ms）</h4>
+      <table className="offsets">
+        <thead><tr><th>记录</th><th>设备</th><th>开始区间</th><th>结束区间</th><th>证据</th></tr></thead>
+        <tbody>
+          {(clock.offsets ?? []).map(bound => <OffsetRow key={bound.recordId} bound={bound} disabled={props.disabledRecords.includes(bound.recordId)} onToggle={() => props.toggleRecordDisabled(bound.recordId)} />)}
+          {(clock.offsets ?? []).length === 0 && records.map(record => <tr key={record.id}><td>{record.id}</td><td>{record.deviceId}</td><td colSpan={2} className="muted">无区间数据</td><td /></tr>)}
+        </tbody>
+      </table>
+    </div>}
+  </div>;
+}
+function OffsetRow({ bound, disabled, onToggle }: { bound: OffsetBound; disabled: boolean; onToggle: () => void }) {
+  const range = (lower: number, upper: number) => bound.certain ? `${fmt(lower)} – ${fmt(upper)}` : '无界（仅名义读数）';
+  return <tr className={disabled ? 'disabled' : ''}>
+    <td>{bound.recordId}</td>
+    <td>{bound.deviceId}</td>
+    <td>{disabled ? '已停用' : range(bound.startLower, bound.startUpper)}</td>
+    <td>{disabled ? '已停用' : range(bound.endLower, bound.endUpper)}</td>
+    <td><button className="ghost" onClick={onToggle}>{disabled ? '恢复证据' : '停用证据'}</button></td>
+  </tr>;
+}
 function DeltaValue({ value }: { value: { nominal: number; lower?: number; upper?: number; certain: boolean } }) {
   if (!value.certain) return <span>{fmt(value.lower)}–{fmt(value.upper)} ms（名义 {fmt(value.nominal)}）</span>;
   return <span>{fmt(value.nominal)} ms</span>;
@@ -202,4 +335,3 @@ function kids(node: NodeType): NodeType[] { return node.children ?? []; }
 function flatten(node: NodeType): NodeType[] { return [node, ...kids(node).flatMap(flatten)]; }
 function findNode(node: NodeType, id: string): NodeType | null { if (node.record.id === id) return node; for (const child of kids(node)) { const found = findNode(child, id); if (found) return found; } return null; }
 function fmt(value: number | undefined) { return Number.isFinite(value) ? Math.round((value || 0) * 100) / 100 : '—'; }
-

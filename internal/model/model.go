@@ -51,6 +51,9 @@ type ClockConstraint struct {
 	MinMS     float64 `json:"minMs"`
 	MaxMS     float64 `json:"maxMs"`
 	Rationale string  `json:"rationale,omitempty"`
+
+	// Disabled 为 true 时约束暂时停用，不参与求解，可随时恢复。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 const (
@@ -67,12 +70,27 @@ type ClockConflict struct {
 	Summary       string   `json:"summary"`
 }
 
+// OffsetBound 是某条原始记录相对其调用链根节点开始时刻的可证明起止区间（毫秒）。
+// Certain=false 表示在当前假设下区间无界，只保留名义读数，不伪装成确定值。
+type OffsetBound struct {
+	RecordID   string  `json:"recordId"`
+	DeviceID   string  `json:"deviceId"`
+	StartLower float64 `json:"startLower"`
+	StartUpper float64 `json:"startUpper"`
+	EndLower   float64 `json:"endLower"`
+	EndUpper   float64 `json:"endUpper"`
+	Certain    bool    `json:"certain"`
+}
+
 // ClockReport 汇总一次时钟假设下的求解结果。
 type ClockReport struct {
-	Feasible           bool            `json:"feasible"`
-	Conflicts          []ClockConflict `json:"conflicts,omitempty"`
-	ConstraintIDs      []string        `json:"constraintIds,omitempty"`
-	UncertainRecordIDs []string        `json:"uncertainRecordIds,omitempty"`
+	Feasible              bool            `json:"feasible"`
+	Conflicts             []ClockConflict `json:"conflicts,omitempty"`
+	ConstraintIDs         []string        `json:"constraintIds,omitempty"`
+	InactiveConstraintIDs []string        `json:"inactiveConstraintIds,omitempty"`
+	DisabledRecordIDs     []string        `json:"disabledRecordIds,omitempty"`
+	UncertainRecordIDs    []string        `json:"uncertainRecordIds,omitempty"`
+	Offsets               []OffsetBound   `json:"offsets,omitempty"`
 }
 
 type Evidence struct {
@@ -82,16 +100,16 @@ type Evidence struct {
 }
 
 type Investigation struct {
-	ID        string    `json:"id"`
-	BatchID   string    `json:"batchId"`
-	Name      string    `json:"name"`
-	RootID    string    `json:"rootId"`
-	TraceID   string    `json:"traceId"`
-	Selected  string    `json:"selectedId,omitempty"`
-	Notes     string    `json:"notes,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	View      ViewState `json:"view"`
+	ID         string          `json:"id"`
+	BatchID    string          `json:"batchId"`
+	Name       string          `json:"name"`
+	RootID     string          `json:"rootId"`
+	TraceID    string          `json:"traceId"`
+	Selected   string          `json:"selectedId,omitempty"`
+	Notes      string          `json:"notes,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	UpdatedAt  time.Time       `json:"updatedAt"`
+	View       ViewState       `json:"view"`
 	Hypothesis ClockHypothesis `json:"hypothesis,omitempty"`
 }
 
@@ -103,9 +121,10 @@ type ViewState struct {
 
 // ClockHypothesis 是一次调查采用的时钟假设：约束集合与尚未解决的部分。
 type ClockHypothesis struct {
-	Name        string            `json:"name,omitempty"`
-	Constraints []ClockConstraint `json:"constraints,omitempty"`
-	Unresolved  []string          `json:"unresolved,omitempty"`
+	Name            string            `json:"name,omitempty"`
+	Constraints     []ClockConstraint `json:"constraints,omitempty"`
+	DisabledRecords []string          `json:"disabledRecords,omitempty"`
+	Unresolved      []string          `json:"unresolved,omitempty"`
 }
 
 type RequestSummary struct {
@@ -177,5 +196,9 @@ type Comparison struct {
 	WaitDelta          DurationBreakdown `json:"waitDelta"`
 	Attribution        string            `json:"attribution"`
 	EvidenceIncomplete bool              `json:"evidenceIncomplete"`
-	Notes              []string          `json:"notes"`
+	// AssumptionTightened 为 true 时，两侧差异来自时钟假设收紧而非真实耗时变化。
+	AssumptionTightened bool     `json:"assumptionTightened"`
+	HypothesisA         string   `json:"hypothesisA,omitempty"`
+	HypothesisB         string   `json:"hypothesisB,omitempty"`
+	Notes               []string `json:"notes"`
 }

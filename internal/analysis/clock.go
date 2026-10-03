@@ -30,12 +30,13 @@ type clockSolver struct {
 // solveClock 在不修改原始时间戳的前提下，把同设备时钟读数与研究者补充的
 // 时钟依据统一为差分约束系统，求每个事件相对其他事件的可达时间区间。
 // 约束相互矛盾时返回矛盾涉及的原始记录与约束，不挑选精确时刻掩盖冲突。
-func solveClock(records []model.CallRecord, constraints []model.ClockConstraint) (*clockSolver, []model.ClockConflict) {
+// disabled 中的记录被暂时停用：不参与求解，也不作为约束端点。
+func solveClock(records []model.CallRecord, constraints []model.ClockConstraint, disabled map[string]bool) (*clockSolver, []model.ClockConflict) {
 	solver := &clockSolver{index: map[string]int{}, feasible: true}
 	conflicts := []model.ClockConflict{}
 	valid := map[string]bool{}
 	for _, rec := range records {
-		if rec.Duplicate {
+		if rec.Duplicate || disabled[rec.ID] {
 			continue
 		}
 		valid[rec.ID] = true
@@ -46,7 +47,7 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 	// 同一设备上的时钟读数次序与差值按名义时间戳精确固定；时间倒置记录不加入。
 	byDevice := map[string][]model.CallRecord{}
 	for _, rec := range records {
-		if rec.Duplicate || rec.End.Before(rec.Start) {
+		if rec.Duplicate || disabled[rec.ID] || rec.End.Before(rec.Start) {
 			continue
 		}
 		byDevice[rec.DeviceID] = append(byDevice[rec.DeviceID], rec)
@@ -72,7 +73,7 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 		for i := 1; i < len(evList); i++ {
 			delta := ms(evList[i].t.Sub(evList[i-1].t))
 			src := "device:" + deviceID
-		recs := []string{recOfRef[evList[i-1].ref], recOfRef[evList[i].ref]}
+			recs := []string{recOfRef[evList[i-1].ref], recOfRef[evList[i].ref]}
 			solver.addEdge(evList[i-1].ref, evList[i].ref, delta, src, recs)
 			solver.addEdge(evList[i].ref, evList[i-1].ref, -delta, src, recs)
 		}
@@ -86,7 +87,13 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 			continue
 		}
 		if !valid[recordOfRef(from)] || !valid[recordOfRef(to)] {
-			conflicts = append(conflicts, model.ClockConflict{Type: "unknown_record", ConstraintIDs: []string{constraint.ID}, RecordIDs: []string{recordOfRef(from), recordOfRef(to)}, Summary: fmt.Sprintf("约束 %s 引用了批次中不存在或重复的原始记录", constraint.ID)})
+			kind := "unknown_record"
+			summary := fmt.Sprintf("约束 %s 引用了批次中不存在或重复的原始记录", constraint.ID)
+			if disabled[recordOfRef(from)] || disabled[recordOfRef(to)] {
+				kind = "excluded_record"
+				summary = fmt.Sprintf("约束 %s 引用了已暂时停用的记录，未参与求解", constraint.ID)
+			}
+			conflicts = append(conflicts, model.ClockConflict{Type: kind, ConstraintIDs: []string{constraint.ID}, RecordIDs: []string{recordOfRef(from), recordOfRef(to)}, Summary: summary})
 			continue
 		}
 		if constraint.MaxMS < constraint.MinMS {
@@ -104,7 +111,7 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 		recordIDs := []string{}
 		for _, edgeIndex := range cycle {
 			e := solver.edges[edgeIndex]
-			if e.source != "" && e.source[:7] != "device:" {
+			if e.source != "" && !isDeviceSource(e.source) {
 				conflictIDs = append(conflictIDs, e.source)
 			}
 			recordIDs = append(recordIDs, e.records...)
@@ -117,11 +124,12 @@ func solveClock(records []model.CallRecord, constraints []model.ClockConstraint)
 			fallback.addEvent(ref)
 		}
 		for _, e := range solver.edges {
-			if len(e.source) >= 7 && e.source[:7] == "device:" {
+			if isDeviceSource(e.source) {
 				fallback.edges = append(fallback.edges, e)
 			}
 		}
 		fallback.floyd()
+		fallback.feasible = false
 		return fallback, conflicts
 	}
 
@@ -288,6 +296,8 @@ func (s *clockSolver) ordered(from, to string) (decided, after bool) {
 	}
 	return false, false
 }
+
+func isDeviceSource(source string) bool { return len(source) >= 7 && source[:7] == "device:" }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 

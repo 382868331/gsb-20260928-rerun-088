@@ -14,7 +14,15 @@ type interval struct {
 	device     string
 }
 
+// Analyze 按时钟读数复算批次，等价于不带任何假设的 AnalyzeWithHypothesis。
 func Analyze(batch model.Batch) model.Analysis {
+	return AnalyzeWithHypothesis(batch, model.ClockHypothesis{})
+}
+
+// AnalyzeWithHypothesis 在原始时间戳不被修改的前提下复算批次，
+// 并应用研究者保存的时钟假设：启用的约束进入差分约束求解，
+// 停用的约束与记录保留在报告中但不影响区间。
+func AnalyzeWithHypothesis(batch model.Batch, hypothesis model.ClockHypothesis) model.Analysis {
 	records := cloneRecords(batch.Records)
 	byID := map[string]model.CallRecord{}
 	duplicates := map[string]bool{}
@@ -109,7 +117,85 @@ func Analyze(batch model.Batch) model.Analysis {
 		return anomalies[i].TraceID < anomalies[j].TraceID
 	})
 	batch.Records = records
-	return model.Analysis{Batch: batch, Requests: summaries, Traces: traces, Anomalies: anomalies, GeneratedAt: time.Now().UTC()}
+	result := model.Analysis{Batch: batch, Requests: summaries, Traces: traces, Anomalies: anomalies, GeneratedAt: time.Now().UTC()}
+	result.Clock = solveHypothesis(records, traces, hypothesis)
+	return result
+}
+
+// solveHypothesis 运行时钟假设求解并汇总报告：可行性与矛盾、
+// 每条记录相对其调用链根节点的可证明起止区间，以及仍不确定的记录。
+func solveHypothesis(records []model.CallRecord, traces map[string]*model.CallNode, hypothesis model.ClockHypothesis) model.ClockReport {
+	disabled := map[string]bool{}
+	for _, id := range hypothesis.DisabledRecords {
+		disabled[id] = true
+	}
+	active := []model.ClockConstraint{}
+	inactive := []string{}
+	for _, constraint := range hypothesis.Constraints {
+		if constraint.Disabled {
+			inactive = append(inactive, constraint.ID)
+			continue
+		}
+		active = append(active, constraint)
+	}
+	solver, conflicts := solveClock(records, active, disabled)
+	report := model.ClockReport{
+		Feasible:              solver.feasible,
+		Conflicts:             conflicts,
+		InactiveConstraintIDs: inactive,
+		DisabledRecordIDs:     uniqStrings(hypothesis.DisabledRecords),
+	}
+	for _, constraint := range active {
+		report.ConstraintIDs = append(report.ConstraintIDs, constraint.ID)
+	}
+	uncertain := map[string]bool{}
+	for _, rec := range records {
+		if disabled[rec.ID] {
+			uncertain[rec.ID] = true
+		}
+	}
+	traceIDs := make([]string, 0, len(traces))
+	for traceID := range traces {
+		traceIDs = append(traceIDs, traceID)
+	}
+	sort.Strings(traceIDs)
+	for _, traceID := range traceIDs {
+		root := traces[traceID]
+		anchor := eventRef(root.Record.ID, "start")
+		walk(root, func(node *model.CallNode) {
+			rec := node.Record
+			if rec.Duplicate {
+				return
+			}
+			if !node.Timing.BoundsCertain {
+				uncertain[rec.ID] = true
+			}
+			bound := model.OffsetBound{RecordID: rec.ID, DeviceID: rec.DeviceID, Certain: true}
+			startLower, startUpper, startOK := solver.offsetBounds(anchor, eventRef(rec.ID, "start"))
+			endLower, endUpper, endOK := solver.offsetBounds(anchor, eventRef(rec.ID, "end"))
+			if !startOK || !endOK {
+				bound.Certain = false
+				uncertain[rec.ID] = true
+				startLower = msBetween(root.Record.Start, rec.Start)
+				startUpper = startLower
+				endLower = msBetween(root.Record.Start, rec.End)
+				endUpper = endLower
+			}
+			bound.StartLower, bound.StartUpper = startLower, startUpper
+			bound.EndLower, bound.EndUpper = endLower, endUpper
+			report.Offsets = append(report.Offsets, bound)
+		})
+	}
+	report.UncertainRecordIDs = uniqStrings(mapKeys(uncertain))
+	return report
+}
+
+func mapKeys(values map[string]bool) []string {
+	out := []string{}
+	for key := range values {
+		out = append(out, key)
+	}
+	return out
 }
 
 func assignChildren(node *model.CallNode, children map[string][]*model.CallNode, level int) {

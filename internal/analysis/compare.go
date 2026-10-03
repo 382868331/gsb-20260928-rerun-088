@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 
@@ -25,6 +26,14 @@ func Compare(analysisA, analysisB model.Analysis, invA, invB model.Investigation
 		ExecutionDelta:  delta(sideA.ExecutionMS, sideB.ExecutionMS),
 		WaitDelta:       delta(sideA.WaitMS, sideB.WaitMS),
 		Notes:           []string{},
+		HypothesisA:     invA.Hypothesis.Name,
+		HypothesisB:     invB.Hypothesis.Name,
+	}
+	sameBatch := invA.BatchID != "" && invA.BatchID == invB.BatchID
+	sameHypothesis := hypothesisKey(invA.Hypothesis) == hypothesisKey(invB.Hypothesis)
+	if sameBatch && !sameHypothesis {
+		comparison.AssumptionTightened = true
+		comparison.Notes = append(comparison.Notes, "两次调查基于同一批次的不同时钟假设：耗时区间差异来自假设收紧/放松，不代表真实耗时变化")
 	}
 	certain := comparison.ExecutionDelta.Certain && comparison.WaitDelta.Certain
 	comparison.EvidenceIncomplete = !certain || sideA.AnomalyCount > 0 || sideB.AnomalyCount > 0
@@ -67,6 +76,15 @@ func side(result model.Analysis, inv model.Investigation) (model.ComparisonSide,
 		Parallel:        root.Timing.Parallel,
 		AnomalyCount:    anomalyCount,
 	}, nil
+}
+
+// hypothesisKey 归一化假设内容，用于判断两次调查是否采用同一套时钟假设。
+func hypothesisKey(hypothesis model.ClockHypothesis) string {
+	data, err := json.Marshal(hypothesis)
+	if err != nil {
+		return hypothesis.Name
+	}
+	return string(data)
 }
 
 func findRoot(result model.Analysis, inv model.Investigation) *model.CallNode {
@@ -114,6 +132,9 @@ func delta(a, b model.DurationBreakdown) model.DurationBreakdown {
 }
 
 func attribute(comparison model.Comparison) string {
+	if comparison.AssumptionTightened && comparison.DurationDeltaMS == 0 {
+		return "hypothesis"
+	}
 	if !comparison.ExecutionDelta.Certain || !comparison.WaitDelta.Certain {
 		return "uncertain"
 	}
