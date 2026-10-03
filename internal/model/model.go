@@ -34,7 +34,27 @@ type DurationBreakdown struct {
 	Lower   float64 `json:"lower,omitempty"`
 	Upper   float64 `json:"upper,omitempty"`
 	Certain bool    `json:"certain"`
-	Reason  string  `json:"reason,omitempty"`
+	// Known 为 false 表示连区间都无法界定（缺少时钟约束），此时 Lower/Upper 不具意义。
+	Known  bool   `json:"known,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// ClockConstraint 是研究者补充的时钟依据：两条记录之间的先后顺序，
+// 或两条记录开始时刻之差的可信范围。约束只参与分析推算，不回写原始时间戳。
+type ClockConstraint struct {
+	ID        string   `json:"id"`
+	Type      string   `json:"type"` // "order"：A 的结束必然早于 B 的开始；"offset_range"：B.start - A.start 落在 [LowerMS, UpperMS]
+	ARecordID string   `json:"aRecordId"`
+	BRecordID string   `json:"bRecordId"`
+	LowerMS   *float64 `json:"lowerMs,omitempty"`
+	UpperMS   *float64 `json:"upperMs,omitempty"`
+	Note      string   `json:"note,omitempty"`
+}
+
+// SetKnown 标记区间为可界定，便于链式构造。
+func (d DurationBreakdown) SetKnown() DurationBreakdown {
+	d.Known = true
+	return d
 }
 
 type Evidence struct {
@@ -44,16 +64,17 @@ type Evidence struct {
 }
 
 type Investigation struct {
-	ID        string    `json:"id"`
-	BatchID   string    `json:"batchId"`
-	Name      string    `json:"name"`
-	RootID    string    `json:"rootId"`
-	TraceID   string    `json:"traceId"`
-	Selected  string    `json:"selectedId,omitempty"`
-	Notes     string    `json:"notes,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	View      ViewState `json:"view"`
+	ID          string            `json:"id"`
+	BatchID     string            `json:"batchId"`
+	Name        string            `json:"name"`
+	RootID      string            `json:"rootId"`
+	TraceID     string            `json:"traceId"`
+	Selected    string            `json:"selectedId,omitempty"`
+	Notes       string            `json:"notes,omitempty"`
+	Assumptions []ClockConstraint `json:"assumptions,omitempty"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+	View        ViewState         `json:"view"`
 }
 
 type ViewState struct {
@@ -93,6 +114,8 @@ type CallNode struct {
 
 type TimingSplit struct {
 	DurationMS    float64           `json:"durationMs"`
+	StartMS       DurationBreakdown `json:"startMs"`
+	EndMS         DurationBreakdown `json:"endMs"`
 	WaitMS        DurationBreakdown `json:"waitMs"`
 	ExecutionMS   DurationBreakdown `json:"executionMs"`
 	BoundsCertain bool              `json:"boundsCertain"`
@@ -101,10 +124,25 @@ type TimingSplit struct {
 }
 
 type Anomaly struct {
-	Type     string `json:"type"`
-	RecordID string `json:"recordId,omitempty"`
-	TraceID  string `json:"traceId,omitempty"`
-	Summary  string `json:"summary"`
+	Type          string   `json:"type"`
+	RecordID      string   `json:"recordId,omitempty"`
+	RecordIDs     []string `json:"recordIds,omitempty"`
+	ConstraintIDs []string `json:"constraintIds,omitempty"`
+	TraceID       string   `json:"traceId,omitempty"`
+	Summary       string   `json:"summary"`
+}
+
+// RequestComparison 描述同一次请求在两套时钟假设下的耗时与等待比例区间。
+type RequestComparison struct {
+	TraceID          string            `json:"traceId"`
+	RootID           string            `json:"rootId"`
+	Service          string            `json:"service"`
+	Operation        string            `json:"operation"`
+	DurationA        DurationBreakdown `json:"durationA"`
+	DurationB        DurationBreakdown `json:"durationB"`
+	WaitShareA       DurationBreakdown `json:"waitShareA"`
+	WaitShareB       DurationBreakdown `json:"waitShareB"`
+	OrderUndecidable bool              `json:"orderUndecidable"`
 }
 
 type ComparisonSide struct {
@@ -121,12 +159,15 @@ type ComparisonSide struct {
 }
 
 type Comparison struct {
-	A                  ComparisonSide    `json:"a"`
-	B                  ComparisonSide    `json:"b"`
-	DurationDeltaMS    float64           `json:"durationDeltaMs"`
-	ExecutionDelta     DurationBreakdown `json:"executionDelta"`
-	WaitDelta          DurationBreakdown `json:"waitDelta"`
-	Attribution        string            `json:"attribution"`
-	EvidenceIncomplete bool              `json:"evidenceIncomplete"`
-	Notes              []string          `json:"notes"`
+	A                  ComparisonSide      `json:"a"`
+	B                  ComparisonSide      `json:"b"`
+	DurationDeltaMS    float64             `json:"durationDeltaMs"`
+	ExecutionDelta     DurationBreakdown   `json:"executionDelta"`
+	WaitDelta          DurationBreakdown   `json:"waitDelta"`
+	Attribution        string              `json:"attribution"`
+	AssumptionChange   string              `json:"assumptionChange,omitempty"`
+	Requests           []RequestComparison `json:"requests,omitempty"`
+	RankingNotes       []string            `json:"rankingNotes,omitempty"`
+	EvidenceIncomplete bool                `json:"evidenceIncomplete"`
+	Notes              []string            `json:"notes"`
 }

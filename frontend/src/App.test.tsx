@@ -27,6 +27,7 @@ function mockFetch(analysis: unknown, investigations: unknown[] = []) {
   globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
     const target = String(url);
     if (target.startsWith('/api/import')) return new Response(JSON.stringify(analysis), { status: 200 });
+    if (target.startsWith('/api/batches')) return new Response(JSON.stringify(analysis), { status: 200 });
     if (target.includes('/api/investigations/compare')) return new Response(JSON.stringify({
       a: { name: '第一次' }, b: { name: '第二次' }, durationDeltaMs: 0,
       executionDelta: { nominal: 0, certain: true }, waitDelta: { nominal: 0, certain: true },
@@ -86,4 +87,16 @@ test('保存调查后重算并支持对照', async () => {
   fireEvent.change(screen.getByLabelText('对照'), { target: { value: 'inv-2' } });
   fireEvent.click(screen.getByText('对照所选调查'));
   await waitFor(() => screen.getByText('两次调查总耗时一致'));
+});
+
+test('添加时钟约束并试用假设，不改动原始记录', async () => {
+  render(<App />);
+  fireEvent.click(screen.getByText('导入并分析'));
+  await waitFor(() => screen.getByText(/已导入批次/));
+  fireEvent.click(screen.getByText('添加约束'));
+  fireEvent.change(screen.getByPlaceholderText('记录 A'), { target: { value: 'root' } });
+  fireEvent.change(screen.getByPlaceholderText('记录 B'), { target: { value: 'child' } });
+  fireEvent.click(screen.getByText('试用当前假设'));
+  await waitFor(() => screen.getByText(/已按当前时钟假设试算/));
+  screen.getByText('原始证据 · root');
 });

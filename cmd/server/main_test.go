@@ -150,3 +150,118 @@ func TestCompareEndpointAndReopenConsistency(t *testing.T) {
 		t.Fatal("reopened investigation analysis must match recomputed batch analysis")
 	}
 }
+
+func TestAssumptionsSavedReopenedAndPreviewKeepsRaw(t *testing.T) {
+	dir := t.TempDir()
+	server := &api{store: newStoreForTest(dir)}
+	payload := []byte(`{"source":"test","records":[{"id":"root","traceId":"trace","service":"api","operation":"GET","deviceId":"a","start":"2026-09-29T10:00:00Z","end":"2026-09-29T10:00:01Z"},{"id":"remote","parentId":"root","traceId":"trace","service":"db","operation":"query","deviceId":"b","start":"2026-09-29T10:00:00.2Z","end":"2026-09-29T10:00:00.8Z"}]}`)
+	importResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(importResponse, httptest.NewRequest(http.MethodPost, "/api/import/manual", bytes.NewReader(payload)))
+	if importResponse.Code != http.StatusOK {
+		t.Fatalf("import status = %d: %s", importResponse.Code, importResponse.Body.String())
+	}
+	var imported struct {
+		Batch struct {
+			ID string `json:"id"`
+		} `json:"batch"`
+	}
+	if err := json.Unmarshal(importResponse.Body.Bytes(), &imported); err != nil {
+		t.Fatal(err)
+	}
+
+	low, high := 200.0, 200.0
+	_ = high
+	saveBody := []byte(`{"batchId":"` + imported.Batch.ID + `","name":"带假设","rootId":"root","traceId":"trace","assumptions":[{"id":"c1","type":"offset_range","aRecordId":"root","bRecordId":"remote","lowerMs":200,"upperMs":200}]}`)
+	saveResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(saveResponse, httptest.NewRequest(http.MethodPost, "/api/investigations", bytes.NewReader(saveBody)))
+	if saveResponse.Code != http.StatusOK {
+		t.Fatalf("save status = %d: %s", saveResponse.Code, saveResponse.Body.String())
+	}
+	var saved struct {
+		ID          string `json:"id"`
+		Assumptions []struct {
+			ID      string   `json:"id"`
+			LowerMS *float64 `json:"lowerMs"`
+		} `json:"assumptions"`
+	}
+	if err := json.Unmarshal(saveResponse.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Assumptions) != 1 || saved.Assumptions[0].LowerMS == nil || *saved.Assumptions[0].LowerMS != low {
+		t.Fatalf("assumptions must persist with investigation, got %+v", saved.Assumptions)
+	}
+
+	reopenResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reopenResponse, httptest.NewRequest(http.MethodGet, "/api/investigations/"+saved.ID, nil))
+	if reopenResponse.Code != http.StatusOK {
+		t.Fatalf("reopen status = %d", reopenResponse.Code)
+	}
+	var reopened struct {
+		Investigation struct {
+			Assumptions []struct {
+				ID string `json:"id"`
+			} `json:"assumptions"`
+		} `json:"investigation"`
+		Analysis struct {
+			Traces map[string]struct {
+				Timing struct {
+					WaitMS struct {
+						Nominal float64 `json:"nominal"`
+						Certain bool    `json:"certain"`
+					} `json:"waitMs"`
+				} `json:"timing"`
+			} `json:"traces"`
+		} `json:"analysis"`
+	}
+	if err := json.Unmarshal(reopenResponse.Body.Bytes(), &reopened); err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.Investigation.Assumptions) != 1 {
+		t.Fatal("reopened investigation must keep its clock assumptions")
+	}
+	wait := reopened.Analysis.Traces["trace"].Timing.WaitMS
+	if !wait.Certain || wait.Nominal != 600 {
+		t.Fatalf("reopened analysis must apply saved assumptions: %+v", wait)
+	}
+
+	previewBody := []byte(`{"constraints":[{"id":"try","type":"offset_range","aRecordId":"root","bRecordId":"remote","lowerMs":0,"upperMs":400}]}`)
+	previewResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewResponse, httptest.NewRequest(http.MethodPost, "/api/batches/"+imported.Batch.ID+"/analysis", bytes.NewReader(previewBody)))
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status = %d: %s", previewResponse.Code, previewResponse.Body.String())
+	}
+	var preview struct {
+		Batch struct {
+			Records []struct {
+				Start string `json:"start"`
+			} `json:"records"`
+		} `json:"batch"`
+	}
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Batch.Records[1].Start != "2026-09-29T10:00:00.2Z" {
+		t.Fatalf("preview must not rewrite raw timestamps, got %s", preview.Batch.Records[1].Start)
+	}
+
+	// 试用另一套假设不影响已保存调查的重开结果。
+	againResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(againResponse, httptest.NewRequest(http.MethodGet, "/api/investigations/"+saved.ID, nil))
+	var again struct {
+		Analysis struct {
+			Traces map[string]struct {
+				Timing struct {
+					WaitMS struct {
+						Certain bool `json:"certain"`
+					} `json:"waitMs"`
+				} `json:"timing"`
+			} `json:"traces"`
+		} `json:"analysis"`
+	}
+	if err := json.Unmarshal(againResponse.Body.Bytes(), &again); err != nil {
+		t.Fatal(err)
+	}
+	if !again.Analysis.Traces["trace"].Timing.WaitMS.Certain {
+		t.Fatal("saved investigation assumptions must survive previewing other assumptions")
+	}
+}

@@ -59,3 +59,9 @@ pre { max-height: 320px; overflow: auto; background: #0f172a; color: #dbeafe; pa
 .compare-result h4 { margin: 0 0 6px; }
 .compare-result .note { display: block; margin-top: 4px; }
 @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }
+
+.constraints { margin-top: 12px; border-top: 1px solid #2a2f3a; padding-top: 8px; }
+.constraint { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.constraint input, .constraint select { flex: 1 1 40%; min-width: 90px; }
+.constraint-actions { display: flex; gap: 8px; }
+.request-compare p em { margin-left: 6px; font-style: normal; }

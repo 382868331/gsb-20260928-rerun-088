@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { compareInvestigations, importManual, listInvestigations, openInvestigation, saveInvestigation } from './api';
+import { compareInvestigations, importManual, listInvestigations, openInvestigation, previewAnalysis, saveInvestigation } from './api';
 import { sample } from './sample';
-import type { Analysis, Anomaly, Comparison, Investigation, NodeType } from './types';
+import type { Analysis, Anomaly, ClockConstraint, Comparison, Investigation, NodeType } from './types';
 import './style.css';
 
 const anomalyLabel: Record<string, string> = {
-  duplicate_record: '重复记录', missing_parent: '缺失父调用', negative_duration: '时间倒置', multiple_roots: '多个根节点'
+  duplicate_record: '重复记录', missing_parent: '缺失父调用', negative_duration: '时间倒置', multiple_roots: '多个根节点',
+  constraint_conflict: '时钟约束矛盾', constraint_unknown_record: '约束引用缺失记录'
 };
 
 const attributionLabel: Record<string, string> = {
@@ -28,6 +29,7 @@ export default function App() {
   const [compareB, setCompareB] = useState('');
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [message, setMessage] = useState('');
+  const [constraints, setConstraints] = useState<ClockConstraint[]>([]);
 
   useEffect(() => { listInvestigations().then(setSaved).catch(() => undefined); }, []);
   const traces = analysis?.traces ?? {};
@@ -59,10 +61,19 @@ export default function App() {
 
   async function doSave() {
     if (!analysis || !trace) return;
-    const item: Investigation = { batchId: analysis.batch.id, name, rootId: trace.record.id, traceId: trace.record.traceId, selectedId: selected?.record.id, notes, view: { timeMode: 'bounds', expandedIds: [...expandedIds] } };
+    const item: Investigation = { batchId: analysis.batch.id, name, rootId: trace.record.id, traceId: trace.record.traceId, selectedId: selected?.record.id, notes, assumptions: constraints, view: { timeMode: 'bounds', expandedIds: [...expandedIds] } };
     const result = await saveInvestigation(item);
     setSaved(await listInvestigations());
     setMessage(`调查 ${result.id} 已保存`);
+  }
+
+  async function doPreview() {
+    if (!analysis) return;
+    try {
+      const result = await previewAnalysis(analysis.batch.id, constraints);
+      adoptAnalysis(result, traceId, selectedId, [...expandedIds]);
+      setMessage('已按当前时钟假设试算，原始记录未改动；保存调查后假设随之保留');
+    } catch (error) { setMessage((error as Error).message); }
   }
 
   async function reopen(id: string) {
@@ -71,7 +82,8 @@ export default function App() {
       adoptAnalysis(reopened.analysis, reopened.investigation.traceId, reopened.investigation.selectedId || reopened.investigation.rootId, reopened.investigation.view?.expandedIds);
       setName(reopened.investigation.name);
       setNotes(reopened.investigation.notes || '');
-      setMessage('已重新打开调查，耗时由原始记录重新计算');
+      setConstraints(reopened.investigation.assumptions ?? []);
+      setMessage('已重新打开调查，耗时按保存的时钟假设由原始记录重新计算');
     } catch (error) { setMessage((error as Error).message); }
   }
 
@@ -101,6 +113,7 @@ export default function App() {
           {saved.length === 0 && <p className="muted">尚无保存视图</p>}
           {saved.map(item => <button key={item.id} className="ghost" onClick={() => item.id && reopen(item.id)}>{item.name}<span>{item.id}</span></button>)}
         </div>
+        <ConstraintEditor constraints={constraints} onChange={setConstraints} onPreview={doPreview} disabled={!analysis} />
         <div className="compare">
           <h3>多次调查对照</h3>
           {saved.length < 2 && <p className="muted">保存至少两次调查后可对照</p>}
@@ -166,9 +179,51 @@ function Evidence({ node }: { node: NodeType }) {
   return <article className="evidence">
     <h3>原始证据 · {node.record.id}</h3>
     <p>{node.timing?.reason || '该节点没有额外耗时说明。'}</p>
+    <dl>
+      <dt>开始区间（相对根）</dt><dd><IntervalText value={node.timing?.startMs} /></dd>
+      <dt>结束区间（相对根）</dt><dd><IntervalText value={node.timing?.endMs} /></dd>
+      <dt>等待区间</dt><dd><IntervalText value={node.timing?.waitMs} /></dd>
+    </dl>
     <dl><dt>开始</dt><dd>{node.record.start}</dd><dt>结束</dt><dd>{node.record.end}</dd><dt>父调用</dt><dd>{node.record.parentId || '根调用'}</dd><dt>设备</dt><dd>{node.record.deviceId}</dd></dl>
     <pre>{JSON.stringify(node.record.raw || node.record, null, 2)}</pre>
   </article>;
+}
+
+function IntervalText({ value }: { value?: { nominal: number; lower?: number; upper?: number; certain: boolean; known?: boolean; reason?: string } }) {
+  if (!value) return <span>—</span>;
+  if (value.certain) return <span>{fmt(value.nominal)} ms（确定）</span>;
+  if (value.known === false) return <span className="uncertain">{value.reason || '区间无法界定'}</span>;
+  return <span>{fmt(value.lower)}–{fmt(value.upper)} ms（名义 {fmt(value.nominal)}）</span>;
+}
+
+function ConstraintEditor({ constraints, onChange, onPreview, disabled }: { constraints: ClockConstraint[]; onChange: (items: ClockConstraint[]) => void; onPreview: () => void; disabled: boolean }) {
+  function update(index: number, patch: Partial<ClockConstraint>) {
+    onChange(constraints.map((item, i) => i === index ? { ...item, ...patch } : item));
+  }
+  function add() {
+    onChange([...constraints, { id: `c-${Date.now()}`, type: 'order', aRecordId: '', bRecordId: '' }]);
+  }
+  return <div className="constraints">
+    <h3>时钟假设（约束）</h3>
+    <p className="muted">补充记录间的先后或时差范围；矛盾时会点名涉及的原记录，不会自动选时刻。</p>
+    {constraints.map((item, index) => <div className="constraint" key={item.id}>
+      <select value={item.type} onChange={e => update(index, { type: e.target.value as ClockConstraint['type'] })}>
+        <option value="order">A 结束早于 B 开始</option>
+        <option value="offset_range">B.start − A.start 范围</option>
+      </select>
+      <input placeholder="记录 A" value={item.aRecordId} onChange={e => update(index, { aRecordId: e.target.value })} />
+      <input placeholder="记录 B" value={item.bRecordId} onChange={e => update(index, { bRecordId: e.target.value })} />
+      {item.type === 'offset_range' && <>
+        <input type="number" placeholder="下限 ms" value={item.lowerMs ?? ''} onChange={e => update(index, { lowerMs: e.target.value === '' ? undefined : Number(e.target.value) })} />
+        <input type="number" placeholder="上限 ms" value={item.upperMs ?? ''} onChange={e => update(index, { upperMs: e.target.value === '' ? undefined : Number(e.target.value) })} />
+      </>}
+      <button className="ghost" onClick={() => onChange(constraints.filter((_, i) => i !== index))}>删除</button>
+    </div>)}
+    <div className="constraint-actions">
+      <button className="ghost" onClick={add}>添加约束</button>
+      <button disabled={disabled} onClick={onPreview}>试用当前假设</button>
+    </div>
+  </div>;
 }
 
 function DuplicateEvidence({ analysis }: { analysis: Analysis }) {
@@ -187,9 +242,25 @@ function CompareResult({ comparison }: { comparison: Comparison }) {
       <dt>等待（含并行）增量</dt><dd><DeltaValue value={comparison.waitDelta} /></dd>
     </dl>
     <p className={comparison.evidenceIncomplete ? 'uncertain' : ''}>{attributionLabel[comparison.attribution] || comparison.attribution}</p>
+    {comparison.assumptionChange && <small className="muted note">{comparison.assumptionChange}</small>}
     {comparison.evidenceIncomplete && <small className="uncertain">证据不完整：存在异常记录或跨设备时钟不确定</small>}
+    {(comparison.rankingNotes ?? []).map((note, index) => <small key={`rank-${index}`} className="uncertain note">{note}</small>)}
+    {(comparison.requests ?? []).length > 0 && <div className="request-compare">
+      <h4>各请求等待比例（区间重叠则无法判定先后）</h4>
+      {(comparison.requests ?? []).map(item => <p key={item.traceId} className={item.orderUndecidable ? 'uncertain' : ''}>
+        <b>{item.service}</b> {item.operation}：基线 <ShareText value={item.waitShareA} />，对照 <ShareText value={item.waitShareB} />
+        {item.orderUndecidable && <em>无法判定先后</em>}
+      </p>)}
+    </div>}
     {(comparison.notes ?? []).map((note, index) => <small key={index} className="muted note">{note}</small>)}
   </div>;
+}
+
+function ShareText({ value }: { value: { nominal: number; lower?: number; upper?: number; certain: boolean; known?: boolean } }) {
+  if (value.known === false) return <span>无法界定</span>;
+  const pct = (v?: number) => `${Math.round((v ?? 0) * 100)}%`;
+  if (value.certain) return <span>{pct(value.nominal)}</span>;
+  return <span>{pct(value.lower)}–{pct(value.upper)}</span>;
 }
 
 function DeltaValue({ value }: { value: { nominal: number; lower?: number; upper?: number; certain: boolean } }) {
@@ -202,4 +273,3 @@ function kids(node: NodeType): NodeType[] { return node.children ?? []; }
 function flatten(node: NodeType): NodeType[] { return [node, ...kids(node).flatMap(flatten)]; }
 function findNode(node: NodeType, id: string): NodeType | null { if (node.record.id === id) return node; for (const child of kids(node)) { const found = findNode(child, id); if (found) return found; } return null; }
 function fmt(value: number | undefined) { return Number.isFinite(value) ? Math.round((value || 0) * 100) / 100 : '—'; }
-

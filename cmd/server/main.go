@@ -41,6 +41,7 @@ func (a *api) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batches", a.listBatches)
 	mux.HandleFunc("POST /api/import/manual", a.importManual)
 	mux.HandleFunc("GET /api/batches/{id}/analysis", a.batchAnalysis)
+	mux.HandleFunc("POST /api/batches/{id}/analysis", a.previewAnalysis)
 	mux.HandleFunc("GET /api/investigations", a.listInvestigations)
 	mux.HandleFunc("POST /api/investigations", a.saveInvestigation)
 	mux.HandleFunc("GET /api/investigations/compare", a.compareInvestigations)
@@ -83,6 +84,23 @@ func (a *api) batchAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResponse(w, analysis.Analyze(batch))
+}
+
+// previewAnalysis 用请求体里的时钟约束试算分析结果，不修改任何已保存数据。
+func (a *api) previewAnalysis(w http.ResponseWriter, r *http.Request) {
+	batch, err := a.store.GetBatch(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	var payload struct {
+		Constraints []model.ClockConstraint `json:"constraints"`
+	}
+	if err := jsonDecode(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSONResponse(w, analysis.AnalyzeWithConstraints(batch, payload.Constraints))
 }
 
 func (a *api) listInvestigations(w http.ResponseWriter, _ *http.Request) {
@@ -129,7 +147,7 @@ func (a *api) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.Analyze(batch)})
+	writeJSONResponse(w, map[string]any{"investigation": inv, "analysis": analysis.AnalyzeWithConstraints(batch, inv.Assumptions)})
 }
 
 func (a *api) compareInvestigations(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +183,7 @@ func (a *api) loadInvestigation(id string) (model.Investigation, model.Analysis,
 	if err != nil {
 		return model.Investigation{}, model.Analysis{}, err
 	}
-	return inv, analysis.Analyze(batch), nil
+	return inv, analysis.AnalyzeWithConstraints(batch, inv.Assumptions), nil
 }
 
 func jsonDecode(r *http.Request, target any) error {

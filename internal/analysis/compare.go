@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"math"
+	"sort"
 
 	"performance-investigation/internal/model"
 )
@@ -26,6 +27,8 @@ func Compare(analysisA, analysisB model.Analysis, invA, invB model.Investigation
 		WaitDelta:       delta(sideA.WaitMS, sideB.WaitMS),
 		Notes:           []string{},
 	}
+	comparison.AssumptionChange = assumptionChange(invA, invB)
+	comparison.Requests, comparison.RankingNotes = compareRequests(analysisA, analysisB)
 	certain := comparison.ExecutionDelta.Certain && comparison.WaitDelta.Certain
 	comparison.EvidenceIncomplete = !certain || sideA.AnomalyCount > 0 || sideB.AnomalyCount > 0
 	comparison.Attribution = attribute(comparison)
@@ -126,5 +129,134 @@ func attribute(comparison model.Comparison) string {
 		return "execution"
 	default:
 		return "wait"
+	}
+}
+
+// assumptionChange 说明两次调查采用的时钟依据是否一致，便于解读归因差异来源。
+func assumptionChange(invA, invB model.Investigation) string {
+	same := len(invA.Assumptions) == len(invB.Assumptions)
+	if same {
+		for index := range invA.Assumptions {
+			if !constraintEqual(invA.Assumptions[index], invB.Assumptions[index]) {
+				same = false
+				break
+			}
+		}
+	}
+	if same {
+		return "两次调查采用相同的时钟假设"
+	}
+	return fmt.Sprintf("时钟假设已调整：基线 %d 条约束，对照 %d 条约束；排名与等待比例需按区间重新判断", len(invA.Assumptions), len(invB.Assumptions))
+}
+
+func constraintEqual(a, b model.ClockConstraint) bool {
+	if a.Type != b.Type || a.ARecordID != b.ARecordID || a.BRecordID != b.BRecordID {
+		return false
+	}
+	if (a.LowerMS == nil) != (b.LowerMS == nil) || (a.UpperMS == nil) != (b.UpperMS == nil) {
+		return false
+	}
+	if a.LowerMS != nil && *a.LowerMS != *b.LowerMS {
+		return false
+	}
+	if a.UpperMS != nil && *a.UpperMS != *b.UpperMS {
+		return false
+	}
+	return true
+}
+
+// compareRequests 对同一批次在两套时钟假设下的每个请求给出耗时与等待比例区间；
+// 区间重叠时不判定先后，只保留“无法判定”的说明。
+func compareRequests(analysisA, analysisB model.Analysis) ([]model.RequestComparison, []string) {
+	requests := []model.RequestComparison{}
+	notes := []string{}
+	tracesA := rootNodes(analysisA)
+	tracesB := rootNodes(analysisB)
+	traceIDs := map[string]bool{}
+	for id := range tracesA {
+		traceIDs[id] = true
+	}
+	for id := range tracesB {
+		traceIDs[id] = true
+	}
+	ordered := make([]string, 0, len(traceIDs))
+	for id := range traceIDs {
+		ordered = append(ordered, id)
+	}
+	sort.Strings(ordered)
+	undecidable := map[string]bool{}
+	for _, traceID := range ordered {
+		nodeA, okA := tracesA[traceID]
+		nodeB, okB := tracesB[traceID]
+		if !okA || !okB {
+			continue
+		}
+		item := model.RequestComparison{
+			TraceID:    traceID,
+			RootID:     nodeA.Record.ID,
+			Service:    nodeA.Record.Service,
+			Operation:  nodeA.Record.Operation,
+			DurationA:  durationOf(nodeA),
+			DurationB:  durationOf(nodeB),
+			WaitShareA: waitShare(nodeA),
+			WaitShareB: waitShare(nodeB),
+		}
+		requests = append(requests, item)
+	}
+	notes = append(notes, overlapNotes("基线", requests, func(r model.RequestComparison) model.DurationBreakdown { return r.WaitShareA }, undecidable)...)
+	notes = append(notes, overlapNotes("对照", requests, func(r model.RequestComparison) model.DurationBreakdown { return r.WaitShareB }, undecidable)...)
+	for index := range requests {
+		if undecidable[requests[index].TraceID] {
+			requests[index].OrderUndecidable = true
+		}
+	}
+	return requests, notes
+}
+
+// overlapNotes 找出等待比例区间两两重叠的请求对；重叠即无法判定先后。
+func overlapNotes(label string, requests []model.RequestComparison, pick func(model.RequestComparison) model.DurationBreakdown, undecidable map[string]bool) []string {
+	notes := []string{}
+	for i := range requests {
+		for j := i + 1; j < len(requests); j++ {
+			a, b := pick(requests[i]), pick(requests[j])
+			if !a.Known || !b.Known {
+				continue
+			}
+			if a.Lower <= b.Upper && b.Lower <= a.Upper {
+				undecidable[requests[i].TraceID] = true
+				undecidable[requests[j].TraceID] = true
+				notes = append(notes, fmt.Sprintf("%s假设下 %s 与 %s 的等待比例区间重叠（%.0f%%–%.0f%% 与 %.0f%%–%.0f%%），无法判定先后",
+					label, requests[i].Service, requests[j].Service, a.Lower*100, a.Upper*100, b.Lower*100, b.Upper*100))
+			}
+		}
+	}
+	return notes
+}
+
+func rootNodes(result model.Analysis) map[string]*model.CallNode {
+	out := map[string]*model.CallNode{}
+	for traceID, node := range result.Traces {
+		out[traceID] = node
+	}
+	return out
+}
+
+func durationOf(node *model.CallNode) model.DurationBreakdown {
+	duration := node.Timing.DurationMS
+	return model.DurationBreakdown{Nominal: duration, Lower: duration, Upper: duration, Certain: true, Known: true}
+}
+
+func waitShare(node *model.CallNode) model.DurationBreakdown {
+	duration := node.Timing.DurationMS
+	if duration <= 0 {
+		return model.DurationBreakdown{Known: false, Reason: "总耗时非正，无法计算等待比例"}
+	}
+	wait := node.Timing.WaitMS
+	return model.DurationBreakdown{
+		Nominal: wait.Nominal / duration,
+		Lower:   wait.Lower / duration,
+		Upper:   wait.Upper / duration,
+		Certain: wait.Certain,
+		Known:   true,
 	}
 }
