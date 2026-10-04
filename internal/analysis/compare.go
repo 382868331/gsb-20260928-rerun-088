@@ -108,6 +108,11 @@ func findRoot(result model.Analysis, inv model.Investigation) *model.CallNode {
 	return nil
 }
 
+// RootNodeFor 返回调查选中的根调用节点（供复核包封存/重算结论使用）。
+func RootNodeFor(result model.Analysis, inv model.Investigation) *model.CallNode {
+	return findRoot(result, inv)
+}
+
 func findNode(node *model.CallNode, id string) *model.CallNode {
 	if node.Record.ID == id {
 		return node

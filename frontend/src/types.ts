@@ -18,3 +18,12 @@ export type Analysis = { batch: { id: string; source: string; format: string; im
 export type Investigation = { id?: string; batchId: string; name: string; rootId: string; traceId: string; selectedId?: string; notes?: string; hypothesis?: ClockHypothesis; view?: { showAnomaliesOnly?: boolean; expandedIds?: string[]; timeMode?: string } };
 export type ComparisonSide = { investigationId: string; name: string; rootId: string; traceId: string; durationMs: number; executionMs: Breakdown; waitMs: Breakdown; certain: boolean; parallel: boolean; anomalyCount: number };
 export type Comparison = { a: ComparisonSide; b: ComparisonSide; durationDeltaMs: number; executionDelta: Breakdown; waitDelta: Breakdown; attribution: string; evidenceIncomplete: boolean; assumptionChange?: boolean; notes: string[] };
+export type ReviewIssue = { severity: 'error' | 'warning'; type: string; constraintIds?: string[]; recordIds?: string[]; investigationId?: string; summary: string };
+export type SavedConclusion = { investigationId: string; name: string; rootId: string; traceId: string; clock: ClockReport; notes?: string; savedAt: string };
+export type RecomputedEntry = { investigationId: string; found: boolean; clock: ClockReport; rootTiming?: Timing };
+export type RecomputeSummary = { entries: RecomputedEntry[]; conclusionMatch: boolean; comparisonMatch?: boolean; notes?: string[] };
+export type ReviewPackage = {
+  format: string; exportedAt: string;
+  batch: Analysis['batch']; investigations: Investigation[]; savedConclusions: SavedConclusion[]; comparison?: Comparison;
+};
+export type ReviewImportResult = { package: ReviewPackage; recomputed: RecomputeSummary; issues: ReviewIssue[] };

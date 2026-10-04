@@ -75,3 +75,13 @@ pre { max-height: 320px; overflow: auto; background: #0f172a; color: #dbeafe; pa
 .compare-result h4 { margin: 0 0 6px; }
 .compare-result .note { display: block; margin-top: 4px; }
 @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }
+.review { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 8px; display: grid; gap: 6px; }
+.review-pick { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.review textarea { min-height: 80px; font-size: 12px; }
+.review button { padding: 8px 12px; }
+.review-file { font-size: 13px; display: grid; gap: 4px; }
+.review-result { margin-top: 10px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }
+.review-conclusion { border-left: 3px solid #0369a1; padding: 4px 8px; margin: 6px 0; background: #f0f9ff; border-radius: 4px; }
+.review-conclusion small { display: block; }
+.review-issues { margin-top: 8px; }
+.review-issues span { display: block; }

@@ -188,3 +188,71 @@ type Comparison struct {
 	AssumptionChange bool     `json:"assumptionChange"`
 	Notes            []string `json:"notes"`
 }
+
+// ReviewPackageFormat 是调查复核包的格式标识：同版本应用据此识别并按原依据重算。
+const ReviewPackageFormat = "investigation-review-v1"
+
+// ReviewIssue 记录复核包导入或重算时发现的数据问题。
+// 任何缺失记录、重复 ID、失效约束都保留为问题清单，绝不默默丢弃依据。
+type ReviewIssue struct {
+	Severity      string   `json:"severity"` // error | warning
+	Type          string   `json:"type"`
+	ConstraintIDs []string `json:"constraintIds,omitempty"`
+	RecordIDs     []string `json:"recordIds,omitempty"`
+	Investigation string   `json:"investigationId,omitempty"`
+	Summary       string   `json:"summary"`
+}
+
+const (
+	ReviewIssueError   = "error"
+	ReviewIssueWarning = "warning"
+)
+
+// ReviewSavedConclusion 是导出当时封存的原保存结论（不参与重算，仅用于对照）。
+type ReviewSavedConclusion struct {
+	InvestigationID string      `json:"investigationId"`
+	Name            string      `json:"name"`
+	RootID          string      `json:"rootId"`
+	TraceID         string      `json:"traceId"`
+	Clock           ClockReport `json:"clock"`
+	RootTiming      TimingSplit `json:"rootTiming"`
+	Anomalies       []Anomaly   `json:"anomalies,omitempty"`
+	Notes           string      `json:"notes,omitempty"`
+	SavedAt         time.Time   `json:"savedAt"`
+}
+
+// ReviewRecomputedEntry 是导入后用包内原始记录与时钟依据重新求解的结果。
+// 与 ReviewSavedConclusion 分开存放，明确区分原保存结论与重新求解结果。
+type ReviewRecomputedEntry struct {
+	InvestigationID string      `json:"investigationId"`
+	Found           bool        `json:"found"`
+	Clock           ClockReport `json:"clock"`
+	RootTiming      TimingSplit `json:"rootTiming,omitempty"`
+}
+
+// ReviewRecomputeSummary 汇总重算与原保存结论是否一致。
+type ReviewRecomputeSummary struct {
+	Entries         []ReviewRecomputedEntry `json:"entries"`
+	ConclusionMatch bool                    `json:"conclusionMatch"`
+	ComparisonMatch *bool                   `json:"comparisonMatch,omitempty"`
+	Notes           []string                `json:"notes,omitempty"`
+}
+
+// ReviewPackage 是可导出/导入的调查复核包：原始记录 + 启用/停用时钟依据
+// + 冲突链 + 调查对照结论，全部可在另一台同版本应用上按原依据重算。
+type ReviewPackage struct {
+	Format         string                  `json:"format"`
+	ExportedAt     time.Time               `json:"exportedAt"`
+	Batch          Batch                   `json:"batch"`
+	Investigations []Investigation         `json:"investigations"`
+	Saved          []ReviewSavedConclusion `json:"savedConclusions"`
+	Comparison     *Comparison             `json:"comparison,omitempty"`
+}
+
+// ReviewImportResult 是导入复核包后的回执：原保存结论原样保留，
+// recomputed 为导入侧按原依据重新求解的结果，issues 为问题清单。
+type ReviewImportResult struct {
+	Package    ReviewPackage          `json:"package"`
+	Recomputed ReviewRecomputeSummary `json:"recomputed"`
+	Issues     []ReviewIssue          `json:"issues"`
+}

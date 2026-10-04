@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { compareInvestigations, importManual, listInvestigations, openInvestigation, runClockAnalysis, saveInvestigation } from './api';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import { compareInvestigations, exportReview, importManual, importReview, listInvestigations, openInvestigation, runClockAnalysis, saveInvestigation } from './api';
 import { sample } from './sample';
-import type { Analysis, Anomaly, ClockConstraint, ClockReport, Comparison, Investigation, NodeType } from './types';
+import type { Analysis, Anomaly, ClockConstraint, ClockReport, Comparison, Investigation, NodeType, ReviewImportResult, ReviewPackage } from './types';
 import './style.css';
 
 const anomalyLabel: Record<string, string> = {
@@ -39,6 +39,9 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [hypothesisName, setHypothesisName] = useState('');
   const [constraints, setConstraints] = useState<ClockConstraint[]>([]);
+  const [reviewSelection, setReviewSelection] = useState<string[]>([]);
+  const [reviewImportText, setReviewImportText] = useState('');
+  const [reviewResult, setReviewResult] = useState<ReviewImportResult | null>(null);
 
   useEffect(() => { listInvestigations().then(setSaved).catch(() => undefined); }, []);
   const traces = analysis?.traces ?? {};
@@ -114,6 +117,49 @@ export default function App() {
     } catch (error) { setComparison(null); setMessage((error as Error).message); }
   }
 
+  async function doExportReview() {
+    if (reviewSelection.length === 0) { setMessage('请选择一个或两个调查导出复核包'); return; }
+    try {
+      const pkg = await exportReview(reviewSelection);
+      const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `review-${pkg.batch.id}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setReviewResult(null);
+      setMessage(`复核包已导出：${pkg.savedConclusions.length} 份封存结论，含启用/停用依据与冲突链`);
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  async function doImportReview() {
+    if (!reviewImportText.trim()) { setMessage('请粘贴复核包 JSON 或选择文件'); return; }
+    try {
+      const pkg = JSON.parse(reviewImportText) as ReviewPackage;
+      const result = await importReview(pkg);
+      setReviewResult(result);
+      setMessage(`复核包已导入：按包内原始依据重新求解${result.recomputed.conclusionMatch ? '，与原保存结论一致' : '，与原保存结论存在差异，详见复核结果'}`);
+      setSaved(await listInvestigations());
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  function onReviewFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setReviewImportText(String(reader.result || ''));
+    reader.readAsText(file);
+  }
+
+  function toggleReviewSelection(id: string) {
+    setReviewSelection(items => {
+      if (items.includes(id)) return items.filter(item => item !== id);
+      if (items.length >= 2) return [items[1], id];
+      return [...items, id];
+    });
+  }
+
   function toggle(id: string) {
     const next = new Set(expandedIds);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -142,6 +188,17 @@ export default function App() {
           </>}
           {comparison && <CompareResult comparison={comparison} />}
         </div>
+        <ReviewPanel
+          saved={saved}
+          selected={reviewSelection}
+          onToggle={toggleReviewSelection}
+          onExport={doExportReview}
+          importText={reviewImportText}
+          onImportTextChange={setReviewImportText}
+          onFile={onReviewFile}
+          onImport={doImportReview}
+          result={reviewResult}
+        />
       </aside>
       <section className="panel requests">
         <div className="panel-title"><h2>慢请求</h2><input value={name} onChange={e => setName(e.target.value)} /></div>
@@ -307,6 +364,70 @@ function DeltaValue({ value }: { value: { nominal: number; lower?: number; upper
 }
 
 function AnomalyRow({ item }: { item: Anomaly }) { return <p className="anomaly"><b>{anomalyLabel[item.type] || item.type}</b><span>{item.summary}</span></p>; }
+
+const reviewIssueLabel: Record<string, string> = {
+  contradiction: '约束相互矛盾', invalid_constraint: '约束无效', unknown_record: '引用未知记录', invalid_range: '时差范围不成立',
+  duplicate_id: '重复记录 ID', missing_record: '依据引用缺失记录', comparison_failed: '对照结论重算失败',
+  batch_id_exists: '批次 ID 已存在', investigation_id_exists: '调查 ID 已存在'
+};
+
+function ReviewPanel({ saved, selected, onToggle, onExport, importText, onImportTextChange, onFile, onImport, result }: {
+  saved: Investigation[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  onExport: () => void;
+  importText: string;
+  onImportTextChange: (value: string) => void;
+  onFile: (event: ChangeEvent<HTMLInputElement>) => void;
+  onImport: () => void;
+  result: ReviewImportResult | null;
+}) {
+  return <div className="review">
+    <h3>调查复核包</h3>
+    <p className="muted">选择一个或两个调查导出：封存原始记录、启用/停用时钟依据、冲突链与对照结论；另一台同版本应用导入后按原依据重算。</p>
+    {saved.map(item => <label key={item.id} className="review-pick">
+      <input type="checkbox" checked={selected.includes(item.id || '')} onChange={() => item.id && onToggle(item.id)} />
+      <span>{item.name}</span>
+    </label>)}
+    <button onClick={onExport} disabled={selected.length === 0}>导出复核包</button>
+    <label className="review-file">导入复核包<input type="file" accept="application/json,.json" onChange={onFile} /></label>
+    <textarea value={importText} onChange={event => onImportTextChange(event.target.value)} placeholder="或直接粘贴复核包 JSON" spellCheck={false} />
+    <button className="ghost" onClick={onImport} disabled={!importText.trim()}>导入并重算</button>
+    {result && <ReviewResultView result={result} />}
+  </div>;
+}
+
+function ReviewResultView({ result }: { result: ReviewImportResult }) {
+  const { recomputed, issues, package: pkg } = result;
+  return <div className="review-result">
+    <h4>复核结果</h4>
+    <p className={recomputed.conclusionMatch ? 'feasible' : 'uncertain'}>
+      {recomputed.conclusionMatch ? '重新求解结果与原保存结论一致。' : '重新求解结果与原保存结论不一致：原保存结论与重算结果已分开列出。'}
+    </p>
+    {recomputed.comparisonMatch !== undefined && <p className={recomputed.comparisonMatch ? 'feasible' : 'uncertain'}>
+      调查对照结论重算{recomputed.comparisonMatch ? '一致' : '不一致'}（{pkg.investigations[0]?.name} → {pkg.investigations[1]?.name}）。
+    </p>}
+    {pkg.savedConclusions.map(saved => {
+      const entry = recomputed.entries.find(item => item.investigationId === saved.investigationId);
+      return <div key={saved.investigationId} className="review-conclusion">
+        <b>{saved.name}</b>
+        <p>原保存结论：{saved.clock.feasible ? '可行' : '不可行'}，约束 {saved.clock.constraintIds?.length ?? 0} 条，停用 {saved.clock.disabledConstraintIds?.length ?? 0} 条，冲突链 {saved.clock.conflicts?.length ?? 0} 组</p>
+        <p>重新求解：{entry?.clock.feasible ? '可行' : '不可行'}，约束 {entry?.clock.constraintIds?.length ?? 0} 条，停用 {entry?.clock.disabledConstraintIds?.length ?? 0} 条，冲突链 {entry?.clock.conflicts?.length ?? 0} 组</p>
+        {saved.clock.conflicts?.map((conflict, i) => <small key={i} className="uncertain">封存冲突：{conflict.constraintIds.join('、')}（{conflict.recordIds.join('、')}）</small>)}
+      </div>;
+    })}
+    {(recomputed.notes ?? []).map((note, i) => <small key={i} className="muted note">{note}</small>)}
+    {issues.length > 0 && <div className="review-issues">
+      <p className="uncertain">问题清单（{issues.length} 项，依据均已保留）：</p>
+      {issues.map((issue, i) => <p key={i} className={issue.severity === 'error' ? 'anomaly' : 'muted'}>
+        <b>[{issue.severity === 'error' ? '错误' : '警告'}] {reviewIssueLabel[issue.type] || issue.type}</b>
+        <span>{issue.summary}</span>
+        {issue.constraintIds?.length ? <span>约束：{issue.constraintIds.join('、')}</span> : null}
+        {issue.recordIds?.length ? <span>记录：{issue.recordIds.join('、')}</span> : null}
+      </p>)}
+    </div>}
+  </div>;
+}
 function kids(node: NodeType): NodeType[] { return node.children ?? []; }
 function flatten(node: NodeType): NodeType[] { return [node, ...kids(node).flatMap(flatten)]; }
 function findNode(node: NodeType, id: string): NodeType | null { if (node.record.id === id) return node; for (const child of kids(node)) { const found = findNode(child, id); if (found) return found; } return null; }

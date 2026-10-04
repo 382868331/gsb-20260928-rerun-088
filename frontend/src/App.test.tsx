@@ -137,3 +137,58 @@ test('约束可暂时停用并随调查保存', async () => {
   const saved = JSON.parse(savedBody || '{}');
   if (!saved.hypothesis?.constraints?.[0]?.disabled) throw new Error('停用的约束必须随调查保存');
 });
+
+test('复核包导出/导入：区分原保存结论与重新求解结果并展示问题清单', async () => {
+  const investigations = [
+    { id: 'inv-1', batchId: 'batch-1', name: '互斥假设', rootId: 'root', traceId: 't-1',
+      hypothesis: { constraints: [{ id: 'c1', type: 'offset', anchor: 'root', target: 'child', minMs: 10, maxMs: 20 }, { id: 'c2', type: 'offset', anchor: 'root', target: 'child', minMs: 40, maxMs: 60 }] } }
+  ];
+  let exportedBody: unknown = null;
+  const reviewPkg = {
+    format: 'investigation-review-v1', exportedAt: '2026-09-30T00:00:00Z',
+    batch: baseAnalysis.batch,
+    investigations,
+    savedConclusions: [{ investigationId: 'inv-1', name: '互斥假设', rootId: 'root', traceId: 't-1',
+      clock: { feasible: false, conflicts: [{ type: 'contradiction', constraintIds: ['c1', 'c2'], recordIds: ['root', 'child'], summary: '相互矛盾' }] } }]
+  };
+  const importResult = {
+    package: reviewPkg,
+    recomputed: { conclusionMatch: true, comparisonMatch: undefined, entries: [{ investigationId: 'inv-1', found: true,
+      clock: { feasible: false, conflicts: [{ type: 'contradiction', constraintIds: ['c1', 'c2'], recordIds: ['root', 'child'], summary: '相互矛盾' }] } }], notes: [] },
+    issues: [
+      { severity: 'error', type: 'contradiction', constraintIds: ['c1', 'c2'], recordIds: ['root', 'child'], summary: '时钟约束相互矛盾' },
+      { severity: 'error', type: 'missing_record', constraintIds: ['c9'], recordIds: ['ghost'], summary: '约束 c9 引用的原始记录不存在' }
+    ]
+  };
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const target = String(url);
+    if (target.includes('/review/export')) { exportedBody = JSON.parse(String(init?.body)); return new Response(JSON.stringify(reviewPkg), { status: 200 }); }
+    if (target.includes('/review/import')) return new Response(JSON.stringify(importResult), { status: 200 });
+    if (target.startsWith('/api/import')) return new Response(JSON.stringify(baseAnalysis), { status: 200 });
+    if (target.startsWith('/api/investigations')) {
+      if (init?.method === 'POST') return new Response(JSON.stringify({ id: 'inv-new' }), { status: 200 });
+      return new Response(JSON.stringify(investigations), { status: 200 });
+    }
+    return new Response('{}', { status: 200 });
+  }) as unknown as typeof fetch;
+  URL.createObjectURL = (() => 'blob:x') as typeof URL.createObjectURL;
+  URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL;
+
+  render(<App />);
+  fireEvent.click(screen.getByText('导入并分析'));
+  await waitFor(() => screen.getByText(/已导入批次/));
+  fireEvent.click(screen.getByLabelText('互斥假设'));
+  fireEvent.click(screen.getByText('导出复核包'));
+  await waitFor(() => screen.getByText(/复核包已导出/));
+  if (!exportedBody || JSON.stringify(exportedBody).includes('investigationIds') === false) {
+    throw new Error('导出请求必须携带所选调查 ID');
+  }
+  fireEvent.change(document.querySelector('.review textarea') as HTMLTextAreaElement, { target: { value: JSON.stringify(reviewPkg) } });
+  fireEvent.click(screen.getByText('导入并重算'));
+  await waitFor(() => screen.getByText('复核结果'));
+  screen.getByText('重新求解结果与原保存结论一致。');
+  screen.getByText('原保存结论：不可行，约束 0 条，停用 0 条，冲突链 1 组');
+  screen.getByText('重新求解：不可行，约束 0 条，停用 0 条，冲突链 1 组');
+  screen.getByText(/约束 c9 引用的原始记录不存在/);
+  screen.getByText(/封存冲突：c1、c2/);
+});

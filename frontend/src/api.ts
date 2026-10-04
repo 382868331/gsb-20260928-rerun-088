@@ -1,4 +1,4 @@
-import type { Analysis, ClockHypothesis, Comparison, Investigation } from './types';
+import type { Analysis, ClockHypothesis, Comparison, Investigation, ReviewImportResult, ReviewPackage } from './types';
 
 export async function importManual(payload: string): Promise<Analysis> {
   const response = await fetch('/api/import/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
@@ -37,6 +37,19 @@ export async function openInvestigation(id: string): Promise<{ investigation: In
 
 export async function compareInvestigations(a: string, b: string): Promise<Comparison> {
   const response = await fetch(`/api/investigations/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function exportReview(ids: string[]): Promise<ReviewPackage> {
+  const payload = ids.length === 2 ? { a: ids[0], b: ids[1] } : { investigationIds: ids };
+  const response = await fetch('/api/review/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function importReview(pkg: ReviewPackage): Promise<ReviewImportResult> {
+  const response = await fetch('/api/review/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pkg) });
   if (!response.ok) throw new Error(await errorText(response));
   return response.json();
 }
