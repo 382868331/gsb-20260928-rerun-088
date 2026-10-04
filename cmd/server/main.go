@@ -46,9 +46,13 @@ func (a *api) Handler() http.Handler {
 	mux.HandleFunc("POST /api/investigations", a.saveInvestigation)
 	mux.HandleFunc("GET /api/investigations/compare", a.compareInvestigations)
 	mux.HandleFunc("GET /api/investigations/{id}", a.getInvestigation)
+	mux.HandleFunc("GET /api/investigations/{id}/review-bundle", a.exportReviewBundle)
+	mux.HandleFunc("POST /api/review-bundles/import", a.importReviewBundle)
 	mux.Handle("/", http.FileServer(http.Dir("./web")))
 	return mux
 }
+
+var errUnknownBundleFormat = errors.New("复核包格式不支持，需要 review-bundle-v1")
 
 func (a *api) listBatches(w http.ResponseWriter, _ *http.Request) {
 	items, err := a.store.ListBatches()
@@ -183,6 +187,97 @@ func (a *api) loadInvestigation(id string) (model.Investigation, model.Analysis,
 		return model.Investigation{}, model.Analysis{}, err
 	}
 	return inv, analysis.AnalyzeWithClock(batch, inv.Hypothesis), nil
+}
+
+// exportReviewBundle 导出调查复核包：原始记录、启用与停用的时钟依据、
+// 冲突链与调查对照结论；可选 compareWith 指定同批次的另一次调查生成对照结论。
+func (a *api) exportReviewBundle(w http.ResponseWriter, r *http.Request) {
+	inv, err := a.store.GetInvestigation(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	batch, err := a.store.GetBatch(inv.BatchID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	related := []model.Investigation{}
+	var comparison *model.Comparison
+	if otherID := r.URL.Query().Get("compareWith"); otherID != "" {
+		invA, analysisA, err := a.loadInvestigation(inv.ID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		invB, analysisB, err := a.loadInvestigation(otherID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		result, err := analysis.Compare(analysisA, analysisB, invA, invB)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		comparison = &result
+		related = append(related, invB)
+	}
+	writeJSONResponse(w, analysis.BuildReviewBundle(inv, batch, related, comparison))
+}
+
+// importReviewBundle 导入复核包：按原依据重算，原保存结论与重新求解结果
+// 并列返回；缺失记录或重复 ID 列入问题清单，依据不静默丢弃。
+func (a *api) importReviewBundle(w http.ResponseWriter, r *http.Request) {
+	var bundle model.ReviewBundle
+	if err := jsonDecode(r, &bundle); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if bundle.Format != model.ReviewBundleFormat {
+		writeError(w, http.StatusBadRequest, errUnknownBundleFormat)
+		return
+	}
+	problems := analysis.ValidateReviewBundle(bundle)
+	if err := a.store.SaveBatch(bundle.Batch); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := a.store.SaveInvestigation(bundle.Investigation); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, related := range bundle.RelatedInvestigations {
+		if err := a.store.SaveInvestigation(related); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	recomputed := analysis.AnalyzeWithClock(bundle.Batch, bundle.Investigation.Hypothesis)
+	result := model.ReviewImportResult{
+		Investigation:    bundle.Investigation,
+		BatchID:          bundle.Batch.ID,
+		Problems:         problems,
+		SavedConclusions: bundle.SavedConclusions,
+		Recomputed:       recomputed,
+	}
+	if bundle.Comparison != nil {
+		result.SavedComparison = bundle.Comparison
+		if len(bundle.RelatedInvestigations) > 0 {
+			related := bundle.RelatedInvestigations[0]
+			relatedAnalysis := analysis.AnalyzeWithClock(bundle.Batch, related.Hypothesis)
+			if recomputedComparison, err := analysis.Compare(recomputed, relatedAnalysis, bundle.Investigation, related); err == nil {
+				result.RecomputedComparison = &recomputedComparison
+			} else {
+				result.Problems = append(result.Problems, model.ReviewProblem{
+					Type:    model.ProblemComparisonNotRecomputed,
+					ID:      related.ID,
+					Summary: "对照结论无法按原依据重算：" + err.Error(),
+				})
+			}
+		}
+	}
+	writeJSONResponse(w, result)
 }
 
 func jsonDecode(r *http.Request, target any) error {

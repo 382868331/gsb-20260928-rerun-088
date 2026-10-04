@@ -188,3 +188,57 @@ type Comparison struct {
 	AssumptionChange bool     `json:"assumptionChange"`
 	Notes            []string `json:"notes"`
 }
+
+// ReviewBundle 是可导出的调查复核包：原始记录、启用与停用的时钟依据、
+// 冲突链与调查对照结论一并打包，另一台同版本应用导入后可按原依据重算，
+// 并明确区分原保存结论与重新求解结果。
+type ReviewBundle struct {
+	// Format 固定为 review-bundle-v1，后续格式演进新增版本，不改动已导出包。
+	Format        string        `json:"format"`
+	ExportedAt    time.Time     `json:"exportedAt"`
+	Investigation Investigation `json:"investigation"`
+	Batch         Batch         `json:"batch"`
+	// RelatedInvestigations 为对照结论涉及的另一次调查（通常同批次、不同假设）。
+	RelatedInvestigations []Investigation `json:"relatedInvestigations,omitempty"`
+	// SavedConclusions 是导出时保存的求解结论（原保存结论）。
+	SavedConclusions SavedConclusions `json:"savedConclusions"`
+	// Comparison 是导出时计算的调查对照结论。
+	Comparison *Comparison `json:"comparison,omitempty"`
+}
+
+const ReviewBundleFormat = "review-bundle-v1"
+
+// SavedConclusions 是导出时刻的求解结论快照，导入方重算后与此对照，
+// 两者并列展示，不用重算结果覆盖原保存结论。
+type SavedConclusions struct {
+	Clock    ClockReport      `json:"clock"`
+	Requests []RequestSummary `json:"requests"`
+}
+
+// ReviewProblem 描述导入复核包时发现但不静默丢弃的问题：
+// 缺失记录、重复 ID 等，依据保留，问题列入清单。
+type ReviewProblem struct {
+	Type    string `json:"type"`
+	ID      string `json:"id,omitempty"`
+	Summary string `json:"summary"`
+}
+
+const (
+	ProblemMissingRecord           = "missing_record"
+	ProblemDuplicateRecordID       = "duplicate_record_id"
+	ProblemDuplicateConstraintID   = "duplicate_constraint_id"
+	ProblemBatchMismatch           = "batch_mismatch"
+	ProblemComparisonNotRecomputed = "comparison_not_recomputed"
+)
+
+// ReviewImportResult 是导入复核包的结果：原保存结论与重新求解结果并列，
+// 问题清单完整保留。
+type ReviewImportResult struct {
+	Investigation        Investigation    `json:"investigation"`
+	BatchID              string           `json:"batchId"`
+	Problems             []ReviewProblem  `json:"problems"`
+	SavedConclusions     SavedConclusions `json:"savedConclusions"`
+	Recomputed           Analysis         `json:"recomputed"`
+	SavedComparison      *Comparison      `json:"savedComparison,omitempty"`
+	RecomputedComparison *Comparison      `json:"recomputedComparison,omitempty"`
+}
