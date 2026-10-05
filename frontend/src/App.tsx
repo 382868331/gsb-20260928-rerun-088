@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { compareInvestigations, importManual, listInvestigations, openInvestigation, runClockAnalysis, saveInvestigation } from './api';
+import { exportReviewBundle, importReviewBundle } from './api';
 import { sample } from './sample';
 import type { Analysis, Anomaly, ClockConstraint, ClockReport, Comparison, Investigation, NodeType } from './types';
+import type { ReviewImportResult, Summary } from './types';
 import './style.css';
 
 const anomalyLabel: Record<string, string> = {
@@ -17,6 +19,11 @@ const attributionLabel: Record<string, string> = {
   wait: '总耗时增加主要来自下游/并行等待',
   uncertain: '证据不完整，无法确定增量来源，保留区间',
   unchanged: '两次调查总耗时一致'
+};
+
+const problemLabel: Record<string, string> = {
+  missing_record: '缺失关联记录', duplicate_record_id: '重复记录 ID', duplicate_constraint_id: '重复依据 ID',
+  batch_mismatch: '批次不一致', comparison_not_recomputed: '对照结论无法重算'
 };
 
 let constraintSeq = 1;
@@ -39,6 +46,10 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [hypothesisName, setHypothesisName] = useState('');
   const [constraints, setConstraints] = useState<ClockConstraint[]>([]);
+  const [reviewExportId, setReviewExportId] = useState('');
+  const [reviewCompareId, setReviewCompareId] = useState('');
+  const [reviewPayload, setReviewPayload] = useState('');
+  const [reviewResult, setReviewResult] = useState<ReviewImportResult | null>(null);
 
   useEffect(() => { listInvestigations().then(setSaved).catch(() => undefined); }, []);
   const traces = analysis?.traces ?? {};
@@ -114,6 +125,42 @@ export default function App() {
     } catch (error) { setComparison(null); setMessage((error as Error).message); }
   }
 
+  async function doExportReview() {
+    if (!reviewExportId) { setMessage('请选择要导出复核包的调查'); return; }
+    try {
+      const bundle = await exportReviewBundle(reviewExportId, reviewCompareId || undefined);
+      const label = saved.find(item => item.id === reviewExportId)?.name || reviewExportId;
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'review-bundle-' + reviewExportId + '.json';
+      link.click();
+      URL.revokeObjectURL(link.href);
+      setMessage('已导出调查「' + label + '」的复核包，可在另一同版本应用中导入重算');
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  async function doImportReview() {
+    if (!reviewPayload.trim()) { setMessage('请选择复核包文件或粘贴复核包 JSON'); return; }
+    try {
+      const result = await importReviewBundle(reviewPayload);
+      setReviewResult(result);
+      setSaved(await listInvestigations());
+      adoptAnalysis(result.recomputed, result.investigation.traceId, result.investigation.selectedId || result.investigation.rootId, result.investigation.view?.expandedIds);
+      setName(result.investigation.name);
+      setNotes(result.investigation.notes || '');
+      setHypothesisName(result.investigation.hypothesis?.name || '');
+      setConstraints(result.investigation.hypothesis?.constraints ?? []);
+      setMessage(result.problems.length > 0 ? '复核包已导入并重算，发现 ' + result.problems.length + ' 个问题，详见问题清单' : '复核包已导入并按原依据重算，原保存结论与重新求解结果并列于下方');
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  function onReviewFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    file.text().then(setReviewPayload).catch(() => setMessage('无法读取复核包文件'));
+  }
+
   function toggle(id: string) {
     const next = new Set(expandedIds);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -140,9 +187,21 @@ export default function App() {
             <label>对照<select value={compareB} onChange={e => setCompareB(e.target.value)}><option value="">选择调查</option>{saved.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
             <button onClick={doCompare}>对照所选调查</button>
           </>}
-          {comparison && <CompareResult comparison={comparison} />}
+           {comparison && <CompareResult comparison={comparison} />}
+         </div>
+        <div className="review">
+          <h3>调查复核包</h3>
+          {saved.length === 0 && <p className="muted">保存调查后可导出复核包，用于跨实例核验</p>}
+          {saved.length > 0 && <>
+            <label>导出调查<select aria-label="导出调查" value={reviewExportId} onChange={e => setReviewExportId(e.target.value)}><option value="">选择调查</option>{saved.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>对照调查（可选）<select aria-label="对照调查（可选）" value={reviewCompareId} onChange={e => setReviewCompareId(e.target.value)}><option value="">不嵌入对照结论</option>{saved.filter(item => item.id !== reviewExportId).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <button onClick={doExportReview}>导出复核包</button>
+          </>}
+          <label>导入复核包<input aria-label="复核包文件" type="file" accept="application/json,.json" onChange={onReviewFile} /></label>
+          <textarea aria-label="复核包 JSON" value={reviewPayload} onChange={e => setReviewPayload(e.target.value)} placeholder="或粘贴复核包 JSON" spellCheck={false} />
+          <button onClick={doImportReview}>导入并重算</button>
         </div>
-      </aside>
+       </aside>
       <section className="panel requests">
         <div className="panel-title"><h2>慢请求</h2><input value={name} onChange={e => setName(e.target.value)} /></div>
         {analysis && requests.length === 0 && <p className="muted">本批次没有可分析的调用记录。</p>}
@@ -165,9 +224,10 @@ export default function App() {
         />}
         {analysis?.clock && <ClockReportView report={analysis.clock} />}
         <label className="notes">调查备注<textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="记录结论、负责人或后续验证" /></label>
-        <button className="primary" disabled={!analysis || !trace} onClick={doSave}>保存调查视图</button>
-        {message && <p className="message">{message}</p>}
-      </section>
+         <button className="primary" disabled={!analysis || !trace} onClick={doSave}>保存调查视图</button>
+         {message && <p className="message">{message}</p>}
+        {reviewResult && <ReviewResult result={reviewResult} />}
+       </section>
       <section className="panel detail">
         <h2>因果关系与耗时拆分</h2>
         {!trace && <p className="muted">导入记录后显示请求树。</p>}
@@ -283,6 +343,37 @@ function DuplicateEvidence({ analysis }: { analysis: Analysis }) {
   const items = (analysis.batch.records ?? []).filter(record => record.duplicate || (record.anomalies ?? []).includes('duplicate_record'));
   if (items.length === 0) return null;
   return <div className="evidence"><h3>重复记录原始证据</h3>{items.map(record => <details key={`${record.id}-${record.start}`}><summary>{record.id} · {record.service} · {record.operation}</summary><pre>{JSON.stringify(record.raw || record, null, 2)}</pre></details>)}</div>;
+}
+
+function ReviewResult({ result }: { result: ReviewImportResult }) {
+  return <div className="review-result">
+    <h3>复核包导入结果 · {result.investigation.name}</h3>
+    <div className="review-columns">
+      <ConclusionColumn title="原保存结论" clock={result.savedConclusions.clock} requests={result.savedConclusions.requests} />
+      <ConclusionColumn title="重新求解结果" clock={result.recomputed.clock} requests={result.recomputed.requests} />
+    </div>
+    {result.savedComparison && <div className="review-columns">
+      <div><h4>原保存对照结论</h4><CompareResult comparison={result.savedComparison} /></div>
+      {result.recomputedComparison
+        ? <div><h4>重算对照结论</h4><CompareResult comparison={result.recomputedComparison} /></div>
+        : <div><h4>重算对照结论</h4><p className="uncertain">对照结论无法按原依据重算，详见问题清单</p></div>}
+    </div>}
+    <div className="problems">
+      <h4>问题清单</h4>
+      {result.problems.length === 0 && <p className="muted">无问题：原始记录与时钟依据完整。</p>}
+      {result.problems.map((problem, index) => <p key={index} className="anomaly"><b>{problemLabel[problem.type] || problem.type}</b><span>{problem.summary}</span></p>)}
+    </div>
+  </div>;
+}
+
+function ConclusionColumn({ title, clock, requests }: { title: string; clock?: ClockReport; requests: Summary[] }) {
+  const items = requests ?? [];
+  return <div className="conclusion">
+    <h4>{title}</h4>
+    {clock && <p className={clock.feasible ? 'feasible' : 'uncertain'}>{clock.feasible ? '时钟假设可行' : '假设不可行：' + (clock.conflicts?.length ?? 0) + ' 组矛盾'}</p>}
+    {items.length === 0 && <p className="muted">无请求记录</p>}
+    {items.map(request => <p key={request.rootId}><b>{request.service}</b> {request.operation}：{fmt(request.durationMs)} ms（执行 {fmt(request.executionMs)} / 等待 {fmt(request.waitMs)}）</p>)}
+  </div>;
 }
 
 function CompareResult({ comparison }: { comparison: Comparison }) {

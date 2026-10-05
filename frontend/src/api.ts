@@ -1,4 +1,4 @@
-import type { Analysis, ClockHypothesis, Comparison, Investigation } from './types';
+import type { Analysis, ClockHypothesis, Comparison, Investigation, ReviewImportResult } from './types';
 
 export async function importManual(payload: string): Promise<Analysis> {
   const response = await fetch('/api/import/manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
@@ -42,3 +42,16 @@ export async function compareInvestigations(a: string, b: string): Promise<Compa
 }
 
 async function errorText(response: Response) { try { const body = await response.json(); return body.error || response.statusText; } catch { return response.statusText; } }
+
+export async function exportReviewBundle(id: string, compareWith?: string): Promise<unknown> {
+  const suffix = compareWith ? '?compareWith=' + encodeURIComponent(compareWith) : '';
+  const response = await fetch('/api/investigations/' + encodeURIComponent(id) + '/review-bundle' + suffix);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}
+
+export async function importReviewBundle(payload: string): Promise<ReviewImportResult> {
+  const response = await fetch('/api/review-bundles/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload });
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json();
+}

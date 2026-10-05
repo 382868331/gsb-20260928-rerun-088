@@ -74,4 +74,13 @@ pre { max-height: 320px; overflow: auto; background: #0f172a; color: #dbeafe; pa
 .compare-result { margin-top: 12px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }
 .compare-result h4 { margin: 0 0 6px; }
 .compare-result .note { display: block; margin-top: 4px; }
+.review { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+.review label { display: block; margin: 8px 0; font-weight: 700; color: #334155; }
+.review select, .review textarea, .review input[type="file"] { width: 100%; margin-top: 4px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 400; }
+.review textarea { min-height: 72px; font-family: monospace; font-size: 12px; }
+.review-result { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 12px; }
+.review-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 8px 0; }
+.conclusion { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px; }
+.conclusion h4 { margin: 0 0 6px; }
+.problems { margin-top: 10px; }
 @media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } }

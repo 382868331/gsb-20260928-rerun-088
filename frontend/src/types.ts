@@ -18,3 +18,10 @@ export type Analysis = { batch: { id: string; source: string; format: string; im
 export type Investigation = { id?: string; batchId: string; name: string; rootId: string; traceId: string; selectedId?: string; notes?: string; hypothesis?: ClockHypothesis; view?: { showAnomaliesOnly?: boolean; expandedIds?: string[]; timeMode?: string } };
 export type ComparisonSide = { investigationId: string; name: string; rootId: string; traceId: string; durationMs: number; executionMs: Breakdown; waitMs: Breakdown; certain: boolean; parallel: boolean; anomalyCount: number };
 export type Comparison = { a: ComparisonSide; b: ComparisonSide; durationDeltaMs: number; executionDelta: Breakdown; waitDelta: Breakdown; attribution: string; evidenceIncomplete: boolean; assumptionChange?: boolean; notes: string[] };
+export type ReviewProblem = { type: string; id?: string; summary: string };
+export type SavedConclusions = { clock: ClockReport; requests: Summary[] };
+export type ReviewImportResult = {
+  investigation: Investigation; batchId: string; problems: ReviewProblem[];
+  savedConclusions: SavedConclusions; recomputed: Analysis;
+  savedComparison?: Comparison; recomputedComparison?: Comparison;
+};

@@ -137,3 +137,48 @@ test('约束可暂时停用并随调查保存', async () => {
   const saved = JSON.parse(savedBody || '{}');
   if (!saved.hypothesis?.constraints?.[0]?.disabled) throw new Error('停用的约束必须随调查保存');
 });
+test('复核包导出与导入：并列展示保存结论与重算结果，保留问题清单', async () => {
+  const investigations = [
+    { id: 'inv-1', batchId: 'batch-1', name: '互斥假设调查', rootId: 'root', traceId: 't-1' },
+    { id: 'inv-2', batchId: 'batch-1', name: '停用后可行调查', rootId: 'root', traceId: 't-1' }
+  ];
+  const importResult = {
+    investigation: investigations[0],
+    batchId: 'batch-1',
+    problems: [
+      { type: 'missing_record', id: 'c-1', summary: '时钟依据 c-1 引用的记录 ghost 不在复核包中' },
+      { type: 'duplicate_record_id', id: 'root', summary: '记录 ID root 出现 2 次，全部保留为原始证据' }
+    ],
+    savedConclusions: { clock: { feasible: false, conflicts: [{ type: 'contradiction', constraintIds: ['c-1'], recordIds: ['root'], summary: '矛盾' }] }, requests: [{ rootId: 'root', traceId: 't-1', service: 'svc', operation: 'op', start: '', durationMs: 1000, waitMs: 600, executionMs: 400, spanCount: 1, anomalyCount: 0, certain: true }] },
+    recomputed: { ...baseAnalysis, clock: { feasible: true } },
+    savedComparison: { a: { name: '互斥假设调查' }, b: { name: '停用后可行调查' }, durationDeltaMs: 0, executionDelta: { nominal: 0, certain: true }, waitDelta: { nominal: 0, certain: true }, attribution: 'unchanged', evidenceIncomplete: false, notes: [] },
+    recomputedComparison: { a: { name: '互斥假设调查' }, b: { name: '停用后可行调查' }, durationDeltaMs: 5, executionDelta: { nominal: 5, certain: true }, waitDelta: { nominal: 0, certain: true }, attribution: 'execution', evidenceIncomplete: false, notes: [] }
+  };
+  let exportedUrl = '';
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const target = String(url);
+    if (target.includes('/review-bundle') && !init?.method) { exportedUrl = target; return new Response(JSON.stringify({ format: 'review-bundle-v1' }), { status: 200 }); }
+    if (target.startsWith('/api/review-bundles/import')) return new Response(JSON.stringify(importResult), { status: 200 });
+    if (target.startsWith('/api/import')) return new Response(JSON.stringify(baseAnalysis), { status: 200 });
+    if (target.startsWith('/api/investigations')) return new Response(JSON.stringify(investigations), { status: 200 });
+    return new Response('{}', { status: 200 });
+  }) as unknown as typeof fetch;
+  (URL as unknown as { createObjectURL: () => string }).createObjectURL = () => 'blob:mock';
+  (URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = () => undefined;
+  render(<App />);
+  await waitFor(() => screen.getByText('导出复核包'));
+  fireEvent.change(screen.getByLabelText('导出调查'), { target: { value: 'inv-1' } });
+  fireEvent.change(screen.getByLabelText('对照调查（可选）'), { target: { value: 'inv-2' } });
+  fireEvent.click(screen.getByText('导出复核包'));
+  await waitFor(() => screen.getByText(/已导出调查「互斥假设调查」的复核包/));
+  if (!exportedUrl.includes('/api/investigations/inv-1/review-bundle?compareWith=inv-2')) throw new Error('导出地址错误: ' + exportedUrl);
+  fireEvent.change(screen.getByLabelText('复核包 JSON'), { target: { value: '{"format":"review-bundle-v1"}' } });
+  fireEvent.click(screen.getByText('导入并重算'));
+  await waitFor(() => screen.getByText(/发现 2 个问题/));
+  screen.getByText('原保存结论');
+  screen.getByText('重新求解结果');
+  screen.getByText('缺失关联记录');
+  screen.getByText('重复记录 ID');
+  screen.getByText('原保存对照结论');
+  screen.getByText('重算对照结论');
+});
