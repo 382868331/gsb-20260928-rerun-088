@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { compareInvestigations, importManual, listInvestigations, openInvestigation, runClockAnalysis, saveInvestigation } from './api';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import { compareInvestigations, exportReviewBundle, importManual, importReviewBundle, listInvestigations, openInvestigation, runClockAnalysis, saveInvestigation } from './api';
 import { sample } from './sample';
-import type { Analysis, Anomaly, ClockConstraint, ClockReport, Comparison, Investigation, NodeType } from './types';
+import type { Analysis, Anomaly, ClockConstraint, ClockReport, Comparison, Investigation, NodeType, ReviewImportResult } from './types';
 import './style.css';
 
 const anomalyLabel: Record<string, string> = {
@@ -17,6 +17,11 @@ const attributionLabel: Record<string, string> = {
   wait: '总耗时增加主要来自下游/并行等待',
   uncertain: '证据不完整，无法确定增量来源，保留区间',
   unchanged: '两次调查总耗时一致'
+};
+
+const problemLabel: Record<string, string> = {
+  missing_record: '缺失关联记录', duplicate_record_id: '重复记录 ID', duplicate_constraint_id: '重复依据 ID',
+  batch_mismatch: '批次不一致', comparison_not_recomputed: '对照结论无法重算'
 };
 
 let constraintSeq = 1;
@@ -39,6 +44,10 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [hypothesisName, setHypothesisName] = useState('');
   const [constraints, setConstraints] = useState<ClockConstraint[]>([]);
+  const [bundleA, setBundleA] = useState('');
+  const [bundleB, setBundleB] = useState('');
+  const [bundlePayload, setBundlePayload] = useState('');
+  const [reviewResult, setReviewResult] = useState<ReviewImportResult | null>(null);
 
   useEffect(() => { listInvestigations().then(setSaved).catch(() => undefined); }, []);
   const traces = analysis?.traces ?? {};
@@ -114,6 +123,38 @@ export default function App() {
     } catch (error) { setComparison(null); setMessage((error as Error).message); }
   }
 
+  async function doExportBundle() {
+    if (!bundleA) { setMessage('请选择要导出复核包的调查'); return; }
+    try {
+      const bundle = await exportReviewBundle(bundleA, bundleB || undefined);
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `review-bundle-${bundleA}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      setMessage(`复核包已导出：${bundleA}${bundleB ? `（含与 ${bundleB} 的对照结论）` : ''}`);
+    } catch (error) { setMessage((error as Error).message); }
+  }
+
+  async function doImportBundle() {
+    if (!bundlePayload.trim()) { setMessage('请粘贴复核包 JSON 或选择文件'); return; }
+    try {
+      const result = await importReviewBundle(bundlePayload);
+      setReviewResult(result);
+      setSaved(await listInvestigations());
+      adoptAnalysis(result.recomputed, result.investigation.traceId, result.investigation.rootId);
+      const count = (result.problems ?? []).length;
+      setMessage(count > 0 ? `复核包已导入并重算，发现 ${count} 个问题（见问题清单）` : '复核包已导入并按原依据重算，无问题');
+    } catch (error) { setReviewResult(null); setMessage((error as Error).message); }
+  }
+
+  function pickBundleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    file.text().then(text => setBundlePayload(text));
+  }
+
   function toggle(id: string) {
     const next = new Set(expandedIds);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -141,6 +182,20 @@ export default function App() {
             <button onClick={doCompare}>对照所选调查</button>
           </>}
           {comparison && <CompareResult comparison={comparison} />}
+        </div>
+        <div className="review">
+          <h3>复核包导出与导入</h3>
+          {saved.length === 0 && <p className="muted">保存调查后可导出复核包</p>}
+          {saved.length > 0 && <>
+            <label>主调查<select aria-label="复核包主调查" value={bundleA} onChange={e => setBundleA(e.target.value)}><option value="">选择调查</option>{saved.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>对照调查（可选，应采用不同假设）<select aria-label="复核包对照调查" value={bundleB} onChange={e => setBundleB(e.target.value)}><option value="">不嵌入对照结论</option>{saved.filter(item => item.id !== bundleA).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <button onClick={doExportBundle}>导出复核包</button>
+          </>}
+          <h3>导入复核包</h3>
+          <input aria-label="复核包文件" type="file" accept="application/json,.json" onChange={pickBundleFile} />
+          <textarea aria-label="复核包 JSON" value={bundlePayload} onChange={e => setBundlePayload(e.target.value)} placeholder="粘贴 review-bundle-v1 JSON，或从上方选择文件" spellCheck={false} />
+          <button onClick={doImportBundle}>导入并重算</button>
+          {reviewResult && <ReviewResult result={reviewResult} />}
         </div>
       </aside>
       <section className="panel requests">
@@ -304,6 +359,39 @@ function CompareResult({ comparison }: { comparison: Comparison }) {
 function DeltaValue({ value }: { value: { nominal: number; lower?: number; upper?: number; certain: boolean } }) {
   if (!value.certain) return <span>{fmt(value.lower)}–{fmt(value.upper)} ms（名义 {fmt(value.nominal)}）</span>;
   return <span>{fmt(value.nominal)} ms</span>;
+}
+
+function ConclusionCard({ title, clock, requests }: { title: string; clock?: ClockReport; requests?: { rootId: string; service: string; operation: string; durationMs: number }[] }) {
+  return <div className="conclusion">
+    <h4>{title}</h4>
+    {!clock && <p className="muted">导出时未保存约束分析结论</p>}
+    {clock && <>
+      <p className={clock.feasible ? 'feasible' : 'uncertain'}>{clock.feasible ? '假设可行' : '假设不可行'}</p>
+      {(clock.conflicts ?? []).length > 0 && <p className="uncertain">{(clock.conflicts ?? []).length} 组冲突链：{(clock.conflicts ?? []).map(c => (c.constraintIds ?? []).join('+') || c.type).join('；')}</p>}
+      {(clock.disabledConstraintIds ?? []).length > 0 && <p className="muted">停用依据：{clock.disabledConstraintIds!.join('、')}</p>}
+    </>}
+    {(requests ?? []).map(item => <p key={item.rootId} className="muted">{item.service} {item.operation}：{fmt(item.durationMs)} ms</p>)}
+  </div>;
+}
+
+function ReviewResult({ result }: { result: ReviewImportResult }) {
+  const problems = result.problems ?? [];
+  return <div className="review-result">
+    <h4>复核结果 · {result.investigation?.name || result.investigation?.id}</h4>
+    {problems.length === 0 && <p className="muted">问题清单为空：记录与依据完整。</p>}
+    {problems.length > 0 && <div className="problems">
+      <h4>问题清单（依据保留，不静默丢弃）</h4>
+      {problems.map((problem, index) => <p key={index} className="problem"><b>{problemLabel[problem.type] || problem.type}</b><span>{problem.summary}</span></p>)}
+    </div>}
+    <div className="side-by-side">
+      <ConclusionCard title="原保存结论" clock={result.savedConclusions?.clock} requests={result.savedConclusions?.requests} />
+      <ConclusionCard title="重新求解结果" clock={result.recomputed?.clock} requests={result.recomputed?.requests} />
+    </div>
+    {(result.savedComparison || result.recomputedComparison) && <div className="side-by-side">
+      <div className="conclusion"><h4>保存的对照结论</h4>{result.savedComparison ? <CompareResult comparison={result.savedComparison} /> : <p className="muted">复核包未嵌入对照结论</p>}</div>
+      <div className="conclusion"><h4>重算的对照结论</h4>{result.recomputedComparison ? <CompareResult comparison={result.recomputedComparison} /> : <p className="muted">对照结论未能重算</p>}</div>
+    </div>}
+  </div>;
 }
 
 function AnomalyRow({ item }: { item: Anomaly }) { return <p className="anomaly"><b>{anomalyLabel[item.type] || item.type}</b><span>{item.summary}</span></p>; }

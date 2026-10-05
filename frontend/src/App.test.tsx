@@ -137,3 +137,58 @@ test('约束可暂时停用并随调查保存', async () => {
   const saved = JSON.parse(savedBody || '{}');
   if (!saved.hypothesis?.constraints?.[0]?.disabled) throw new Error('停用的约束必须随调查保存');
 });
+
+test('复核包导出与导入：并列展示保存结论与重算结果，保留问题清单', async () => {
+  const investigations = [
+    { id: 'inv-1', batchId: 'batch-1', name: '假设A', rootId: 'root', traceId: 't-1' },
+    { id: 'inv-2', batchId: 'batch-1', name: '假设B', rootId: 'root', traceId: 't-1' }
+  ];
+  const bundle = { format: 'review-bundle-v1', investigation: investigations[0], batch: baseAnalysis.batch };
+  const importResult = {
+    investigation: investigations[0],
+    batchId: 'batch-1',
+    problems: [
+      { type: 'missing_record', id: 'c1', summary: '时钟依据 c1 引用的记录 ghost 不在复核包中' },
+      { type: 'duplicate_record_id', id: 'remote', summary: '记录 ID remote 出现 2 次' }
+    ],
+    savedConclusions: { clock: { feasible: false, conflicts: [{ type: 'contradiction', constraintIds: ['c1', 'c2'], recordIds: ['root'], summary: '互斥' }] }, requests: baseAnalysis.requests },
+    recomputed: { ...baseAnalysis, clock: { feasible: false, conflicts: [{ type: 'contradiction', constraintIds: ['c1', 'c2'], recordIds: ['root'], summary: '互斥' }] } }
+  };
+  let exportedQuery = '';
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const target = String(url);
+    if (target.includes('/review-bundle') && !target.includes('import')) { exportedQuery = target; return new Response(JSON.stringify(bundle), { status: 200 }); }
+    if (target.includes('/api/review-bundles/import')) return new Response(JSON.stringify(importResult), { status: 200 });
+    if (target.startsWith('/api/import')) return new Response(JSON.stringify(baseAnalysis), { status: 200 });
+    if (target.startsWith('/api/investigations')) return new Response(JSON.stringify(investigations), { status: 200 });
+    return new Response('{}', { status: 200 });
+  }) as unknown as typeof fetch;
+  const clicks: string[] = [];
+  const originalCreate = URL.createObjectURL;
+  URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL;
+  URL.revokeObjectURL = () => undefined;
+  const originalClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () { clicks.push((this as HTMLAnchorElement).download); };
+  try {
+    render(<App />);
+    await waitFor(() => screen.getByText('导出复核包'));
+    fireEvent.change(screen.getByLabelText('复核包主调查'), { target: { value: 'inv-1' } });
+    fireEvent.change(screen.getByLabelText('复核包对照调查'), { target: { value: 'inv-2' } });
+    fireEvent.click(screen.getByText('导出复核包'));
+    await waitFor(() => screen.getByText(/复核包已导出：inv-1/));
+    if (!exportedQuery.includes('compareWith=inv-2')) throw new Error('导出必须携带对照调查: ' + exportedQuery);
+    if (!clicks.some(name => name.includes('review-bundle-inv-1'))) throw new Error('导出必须触发文件下载');
+
+    fireEvent.change(screen.getByLabelText('复核包 JSON'), { target: { value: JSON.stringify(bundle) } });
+    fireEvent.click(screen.getByText('导入并重算'));
+    await waitFor(() => screen.getByText(/发现 2 个问题/));
+    screen.getByText('原保存结论');
+    screen.getByText('重新求解结果');
+    screen.getByText('缺失关联记录');
+    screen.getByText('重复记录 ID');
+    screen.getByText(/记录 ghost 不在复核包中/);
+  } finally {
+    URL.createObjectURL = originalCreate;
+    HTMLAnchorElement.prototype.click = originalClick;
+  }
+});
